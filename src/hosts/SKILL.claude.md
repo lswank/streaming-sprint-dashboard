@@ -159,8 +159,8 @@ The coordinator is not a sixth researcher.
   the page says what happened instead of implying work is still going on.
 
 ```bash
-python3 "$SPRINT" set RUNDIR market --status blocked \
-  --summary "process exited after the second listing; no rate found"
+python3 "$SPRINT" set RUNDIR exit-cost --status blocked \
+  --summary "process exited after the mover quote; restoration never priced"
 ```
 
 ## 6. Answers are the deliverable

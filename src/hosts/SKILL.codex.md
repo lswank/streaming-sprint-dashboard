@@ -143,10 +143,9 @@ done
 `-C RUNDIR` with `--sandbox workspace-write` is what lets an agent write its own
 state file. If the scripts live outside `RUNDIR`, add `--add-dir <skill dir>`.
 
-Write one prompt file per agent, each naming that agent and the one question it
-owns. The heredoc above is unquoted on purpose, so `$SPRINT` and `RUNDIR` are
-substituted as the file is written and the agent reads absolute paths rather
-than placeholders.
+Each prompt file names its own agent and the one question that agent owns. The
+heredoc is unquoted on purpose, so `$SPRINT` and `RUNDIR` are substituted as the
+file is written and the agent reads absolute paths rather than placeholders.
 
 Every launched process gets its own stdout file: when a card stays queued, that
 file says why, and `python3 "$SPRINT" check RUNDIR` says whether what it wrote
@@ -179,8 +178,8 @@ The coordinator is not a sixth researcher.
   the page says what happened instead of implying work is still going on.
 
 ```bash
-python3 "$SPRINT" set RUNDIR market --status blocked \
-  --summary "process exited after the second listing; no rate found"
+python3 "$SPRINT" set RUNDIR exit-cost --status blocked \
+  --summary "process exited after the mover quote; restoration never priced"
 ```
 
 ## 6. Answers are the deliverable
