@@ -103,6 +103,10 @@ the web, one for the files") leaves every answer half-owned.
 Add `coordinator` as a roster entry so what was verified first hand sits beside
 agent output instead of being confused with it.
 
+One shell trap: in zsh, `--agent "$name:$remit"` applies the `:r` history
+modifier to `$name` and silently mangles it. Write `"${name}:${remit}"`, or
+literal strings as above.
+
 Give the legwork to cheaper models and keep the verification for this session.
 
 ## 4. Launch

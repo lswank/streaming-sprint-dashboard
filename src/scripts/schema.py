@@ -335,8 +335,11 @@ def locked(path: Path):
     drops the first one's row. The lock file sits beside the target so the lock
     survives the atomic replace of the file itself.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = path.with_suffix(path.suffix + ".lock")
+    # WHY a hidden subdirectory: the lock outlives the atomic replace of the file
+    # it guards, and state/ is a directory a person reads. Locks do not belong in it.
+    locks = path.parent / ".locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    lock = locks / (path.name + ".lock")
     with lock.open("a+") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         try:

@@ -777,6 +777,12 @@ def main(argv: list[str] | None = None) -> int:
     except ValidationError as exc:
         print("\n".join(f"error  {p}" for p in exc.problems), file=sys.stderr)
         return 1
+    except OSError as exc:
+        # WHY: a read-only run directory or a full disk is an ordinary situation
+        # for an agent writing into someone else's tree, and it deserves a
+        # sentence rather than a traceback.
+        print(f"error  cannot write to the run directory: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

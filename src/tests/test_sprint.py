@@ -169,10 +169,23 @@ class TestConcurrentWriters(Base):
         self.assertEqual([e for e in errors if e.strip()], [])
         self.assertEqual(set(self.run_obj.answers()), {"q1", "q2"})
 
-    def test_no_temp_or_lock_file_is_left_in_the_state_directory(self):
+    def test_state_holds_only_state(self):
+        """A person reads state/. Temp files and locks do not belong in it."""
         run("add", self.dir, "market", "unknown", "--question", "q", "--why", "w")
-        leftovers = [p.name for p in (self.dir / "state").iterdir() if ".tmp" in p.name]
-        self.assertEqual(leftovers, [])
+        visible = sorted(p.name for p in (self.dir / "state").iterdir()
+                         if not p.name.startswith("."))
+        self.assertEqual(visible, ["exit-cost.json", "market.json"])
+        self.assertTrue((self.dir / "state/.locks").is_dir())
+
+
+class TestUnwritableRun(Base):
+    def test_a_read_only_run_directory_gets_a_sentence(self):
+        import stat
+        state = self.dir / "state"
+        mode = state.stat().st_mode
+        state.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        self.addCleanup(state.chmod, mode)
+        self.assertEqual(run("set", self.dir, "market", "--summary", "s"), 1)
 
 
 class TestFilenameIsIdentity(Base):
