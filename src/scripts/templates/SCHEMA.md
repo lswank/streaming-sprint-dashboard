@@ -3,6 +3,9 @@
 Read this before you do anything. Read `CONTEXT.md` next: it holds the shared
 facts, so you never re-derive what another agent already established.
 
+For the options of any one kind, the run directory and your name come first:
+`sprint.py add <RUN> <AGENT> default --help`.
+
 You own one question. You do not write HTML, you do not edit JSON by hand, and
 you do not touch another agent's files. One process per agent: two processes
 writing the same agent's file will lose rows, because each write rewrites the

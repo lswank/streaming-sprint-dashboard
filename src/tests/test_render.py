@@ -176,6 +176,13 @@ class TestHeaderCounts(unittest.TestCase):
         self.assertIn("need you", render.pills_region([st], {}))
         self.assertNotIn("need you", render.pills_region([st], {qid("m", "q"): {"answer": "a"}}))
 
+    def test_a_zero_count_is_not_shown(self):
+        done = AgentState(name="m", status="done", summary="s")
+        html = render.pills_region([done], {})
+        self.assertIn("1 done", html)
+        self.assertNotIn("0 running", html)
+        self.assertNotIn("0 blocked", html)
+
     def test_agent_count_is_pluralised(self):
         self.assertIn("1 agent<", render.pills_region([AgentState(name="m")], {}))
         self.assertIn("2 agents<", render.pills_region([AgentState(name="m"), AgentState(name="n")], {}))

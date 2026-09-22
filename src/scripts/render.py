@@ -215,14 +215,14 @@ def counts(states: Iterable[AgentState], feedback: dict[str, dict]) -> dict[str,
 
 
 def pills_region(states: Iterable[AgentState], feedback: dict[str, dict]) -> str:
+    """The roster size always shows; a count of zero is noise, so it does not."""
     c = counts(states, feedback)
-    return (
-        f'<span class="pill">{c["agents"]} {plural(c["agents"], "agent")}</span>'
-        f'<span class="pill run">{c["running"]} running</span>'
-        f'<span class="pill ok">{c["done"]} done</span>'
-        + (f'<span class="pill warn">{c["blocked"]} blocked</span>' if c["blocked"] else "")
-        + (f'<span class="pill need">{c["waiting"]} need you</span>' if c["waiting"] else "")
-    )
+    out = [f'<span class="pill">{c["agents"]} {plural(c["agents"], "agent")}</span>']
+    for key, label, cls in (("running", "running", "run"), ("done", "done", "ok"),
+                            ("blocked", "blocked", "warn"), ("waiting", "need you", "need")):
+        if c[key]:
+            out.append(f'<span class="pill {cls}">{c[key]} {label}</span>')
+    return "".join(out)
 
 
 def regions(manifest: Manifest, states: list[AgentState], answers: dict[str, Answer],
