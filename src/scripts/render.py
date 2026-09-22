@@ -19,14 +19,19 @@ from schema import AgentState, Answer, Manifest, qid
 
 LOG_TAIL_LINES = 12          # WHY: a card stays under one screenful at phone width
 MAX_LOG_LINE_CHARS = 200     # WHY: one runaway line must not stretch the grid
+MAX_FIELD_CHARS = 2000       # WHY: an agent pasted a whole file into one field
 
 STATUS_LABEL = {"queued": "queued", "running": "running", "blocked": "blocked",
                 "done": "done", "rejected": "file rejected"}
 
 
 def e(text: object) -> str:
-    """Escape for text and attribute positions alike (quote=True covers both)."""
-    return html.escape(str(text), quote=True)
+    """Escape for text and attribute positions alike (quote=True covers both), and
+    cap the length: the page is a dashboard, not a document viewer."""
+    out = str(text)
+    if len(out) > MAX_FIELD_CHARS:
+        out = out[:MAX_FIELD_CHARS] + " ... (truncated)"
+    return html.escape(out, quote=True)
 
 
 def plural(n: int, word: str) -> str:
@@ -81,17 +86,30 @@ def _paras(text: str) -> str:
     return "".join(f"<p>{e(p.strip())}</p>" for p in text.split("\n\n") if p.strip())
 
 
+def questions_heading(states: Iterable[AgentState], feedback: dict[str, dict]) -> str:
+    """The heading is part of the region: "Needs a human answer" was still on
+    screen after the last question had been answered."""
+    waiting = sum(1 for st in states for h in st.human_input
+                  if qid(st.name, h.question) not in feedback)
+    asked = sum(len(st.human_input) for st in states)
+    if waiting:
+        return f"Needs a human answer ({waiting})"
+    return "Answered by you" if asked else "Needs a human answer"
+
+
 def questions_region(states: Iterable[AgentState], feedback: dict[str, dict]) -> str:
     """Section 2: the interactive panel. Loudest thing on the page while it has rows."""
+    states = list(states)
     open_cards, answered = [], []
     for st in states:
         for h in st.human_input:
             i = qid(st.name, h.question)
             card = _question_card(st.name, i, h, feedback.get(i))
             (answered if i in feedback else open_cards).append(card)
+    head = f'<h2>{e(questions_heading(states, feedback))}</h2>'
     if not open_cards and not answered:
-        return '<p class="empty">Nothing needs you yet.</p>'
-    parts = []
+        return head + '<p class="empty">Nothing needs you yet.</p>'
+    parts = [head]
     if open_cards:
         parts.append(f'<div class="qgrid">{"".join(open_cards)}</div>')
     if answered:
@@ -286,9 +304,12 @@ def page(manifest: Manifest, states: list[AgentState], answers: dict[str, Answer
   <div class="pulse" id="pulse" title="live"><span></span>live</div>
 </header>
 {live_note}
+<noscript><div class="banner">This page needs JavaScript to send an answer.
+Answer from a terminal instead: <code>sprint.py replies RUNDIR</code> shows what
+has been answered, and any agent's question can be answered by writing one JSON
+line into <code>state/_feedback.jsonl</code>.</div></noscript>
 <main>
   <section class="block need" id="needblock">
-    <h2>Needs a human answer</h2>
     <div id="region-questions" class="region">{r["questions"]}</div>
   </section>
   <section class="block">
@@ -422,6 +443,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--s
 h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
 h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--dim);
      margin: 0 0 10px; font-weight: 600; }
+.region h2 { margin-bottom: 10px; }
 h3 { font-size: 14px; margin: 0; }
 .top { display: flex; align-items: center; justify-content: space-between; gap: 16px;
        padding: 18px 16px 12px; border-bottom: 1px solid var(--line); position: sticky; top: 0;

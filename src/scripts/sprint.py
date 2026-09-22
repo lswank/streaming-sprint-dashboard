@@ -153,15 +153,27 @@ class Run:
         return {k: schema.build(Answer, v, f"_answers.json[{k}]") for k, v in raw.items()}
 
     def answers_lenient(self) -> dict[str, Answer]:
-        """For rendering: a broken answers file must not blank the whole page."""
-        try:
-            return self.answers()
-        except ValidationError:
+        """For rendering: one bad row must cost one answer, not all of them."""
+        path = self.internal_path("_answers.json")
+        if not path.exists():
             return {}
+        try:
+            raw = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, Answer] = {}
+        for key, value in raw.items():
+            try:
+                out[key] = schema.build(Answer, value, f"_answers.json[{key}]")
+            except ValidationError:
+                continue
+        return out
 
     def write_answer(self, a: Answer) -> None:
         current = {k: schema.to_dict(v) for k, v in self.answers().items()}
-        current[a.question_id] = schema.to_dict(a)
+        current[a.question_id] = schema.to_dict(schema.validate(a))
         path = self.internal_path("_answers.json")
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(current, indent=2) + "\n")
@@ -245,7 +257,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     for q in questions:
         print(f"    {q.id}  {q.text}")
     print(f"  contract: {run.root / 'SCHEMA.md'}  shared facts: {run.root / 'CONTEXT.md'}")
-    print(f"  next: python3 {Path(__file__).name} serve {run.root}")
+    print(f"  next: nohup python3 {Path(__file__)} serve {run.root} --open "
+          f"> {run.root}/serve.log 2>&1 &")
     return 0
 
 
@@ -587,12 +600,17 @@ def cmd_findings(args: argparse.Namespace) -> int:
 def _code(text: str) -> str:
     """Make text safe inside a markdown code span: one line, no backticks, and no
     run of whitespace left over from the newlines that were collapsed."""
-    return " ".join(text.replace("`", "'").split())
+    out = " ".join(text.replace("`", "'").split())
+    return out if len(out) <= MAX_CELL_CHARS else out[:MAX_CELL_CHARS] + " ... (truncated)"
+
+
+MAX_CELL_CHARS = 2000   # WHY: one agent pasted a whole file into a quote
 
 
 def _cell(text: str) -> str:
     """Keep a pipe inside a cell from splitting the table."""
-    return text.replace("|", "\\|").replace("\n", " ").strip()
+    out = text.replace("|", "\\|").replace("\n", " ").strip()
+    return out if len(out) <= MAX_CELL_CHARS else out[:MAX_CELL_CHARS] + " ... (truncated)"
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
@@ -714,6 +732,7 @@ def _demo_state(run: Run, name: str, status: str, summary: str) -> AgentState:
 def make_handler(run: Run):
     class Handler(BaseHTTPRequestHandler):
         server_version = "sprint-dashboard"
+        protocol_version = "HTTP/1.1"   # keep-alive, so a burst of answers reuses one socket
 
         def log_message(self, fmt, *a):  # WHY: a poll every 3s would bury real errors
             pass
@@ -795,6 +814,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
     run = Run(Path(args.dir).resolve())
     run.require()
     try:
+            # WHY a deeper queue: the default backlog of 5 dropped connections when a
+        # page with many open questions was answered quickly, and the answers with
+        # them.
+        ThreadingHTTPServer.request_queue_size = 128
         httpd = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(run))
     except OSError as exc:
         raise SystemExit(f"cannot serve on port {args.port}: {exc}. "
@@ -814,6 +837,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 # --- argument parsing -------------------------------------------------------------
+
+def _port(value: str) -> int:
+    """argparse-level range check: bind() reports an out-of-range port as an
+    OverflowError, which reaches the user as a traceback."""
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a port number")
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(f"{port} is not in 0-65535")
+    return port
+
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sprint.py", description=__doc__,
@@ -837,7 +872,7 @@ def parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("serve", help="serve the live dashboard on localhost")
     s.add_argument("dir")
-    s.add_argument("--port", type=int, default=DEFAULT_PORT)
+    s.add_argument("--port", type=_port, default=DEFAULT_PORT)
     s.add_argument("--open", action="store_true", help="open the page in the default browser")
     s.add_argument("--once", action="store_true", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_serve)

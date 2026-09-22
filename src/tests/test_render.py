@@ -267,6 +267,41 @@ class TestHierarchy(unittest.TestCase):
         self.assertIn("setInterval(paintTimes", html)
 
 
+class TestQuestionsHeading(unittest.TestCase):
+    """The heading is part of the polled region, so it cannot go stale."""
+
+    def state(self):
+        return AgentState(name="m", human_input=[HumanInput(question="q", options=["a"])])
+
+    def test_it_counts_what_is_waiting(self):
+        self.assertEqual(render.questions_heading([self.state()], {}), "Needs a human answer (1)")
+
+    def test_it_changes_once_everything_is_answered(self):
+        answered = {qid("m", "q"): {"answer": "a"}}
+        self.assertEqual(render.questions_heading([self.state()], answered), "Answered by you")
+
+    def test_the_heading_travels_with_the_region(self):
+        html = render.questions_region([self.state()], {})
+        self.assertIn("<h2>Needs a human answer (1)</h2>", html)
+        page = render.page(manifest(), [self.state()], {}, {}, {}, live=True)
+        self.assertEqual(page.count("Needs a human answer (1)"), 1)
+
+
+class TestWithoutJavaScript(unittest.TestCase):
+    def test_the_page_says_how_to_answer_without_scripting(self):
+        html = render.page(manifest(), [], {}, {}, {}, live=True)
+        self.assertIn("<noscript>", html)
+        self.assertIn("_feedback.jsonl", html)
+
+
+class TestOversizedText(unittest.TestCase):
+    def test_one_enormous_field_is_capped(self):
+        st = AgentState(name="m", status="running", summary="x" * 50_000)
+        html = render.agents_region([st], {})
+        self.assertIn("(truncated)", html)
+        self.assertLess(len(html), 10_000)
+
+
 class TestPage(unittest.TestCase):
     def test_static_build_says_answers_cannot_be_captured(self):
         html = render.page(manifest(), [], {}, {}, {}, live=False)

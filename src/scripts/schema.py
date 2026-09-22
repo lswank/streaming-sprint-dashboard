@@ -311,6 +311,17 @@ _RESOLVE: dict[str, Any] = {
 }
 
 
+def validate(obj: Any) -> Any:
+    """Apply the same rules build() applies, to an object constructed in code.
+
+    WHY the round trip: it reuses one set of rules rather than keeping a second
+    copy in sync. Everything that writes goes through here, so a field that is
+    required cannot reach the disk empty.
+    """
+    build(type(obj), to_dict(obj), type(obj).__name__)
+    return obj
+
+
 def to_dict(obj: Any) -> Any:
     """dataclasses.asdict, minus the recursion cost of dict copies we do not need."""
     if is_dataclass(obj):
@@ -334,13 +345,15 @@ def read_json(path: Path, cls: type) -> Any:
     return build(cls, data, path.name)
 
 
-def write_json(path: Path, obj: Any) -> None:
+def write_json(path: Path, obj: Any, *, check: bool = True) -> None:
     """Atomic write: agents and the renderer run at the same time, so a half-written
     state file would render as a parse error in the user's face.
 
     The temp name carries the process id. Two writers sharing one temp path used
     to race and one of them died with FileNotFoundError on replace.
     """
+    if check:
+        validate(obj)
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     try:
         tmp.write_text(json.dumps(to_dict(obj), indent=2) + "\n")

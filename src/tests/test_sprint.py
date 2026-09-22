@@ -297,6 +297,49 @@ class TestBigLog(Base):
         self.assertEqual(lines, ["12:00:00 real line"])
 
 
+class TestWritePathValidation(Base):
+    """The CLI builds objects in code, which used to skip every rule in build()."""
+
+    def test_empty_evidence_is_refused_at_the_point_of_writing(self):
+        self.assertEqual(run("add", self.dir, "market", "evidence",
+                             "--claim", "", "--source", "", "--date", ""), 1)
+        self.assertEqual(self.run_obj.read_agent("market").evidence, [])
+
+    def test_a_whitespace_answer_is_refused(self):
+        self.assertEqual(run("answer", self.dir, "q1", "--verdict", " ", "--answer", " "), 1)
+        self.assertEqual(self.run_obj.answers(), {})
+
+    def test_one_unreadable_answer_does_not_hide_the_others(self):
+        run("answer", self.dir, "q1", "--verdict", "KEEP ME", "--answer", "good")
+        raw = json.loads((self.dir / "state/_answers.json").read_text())
+        raw["q2"] = {"question_id": "q2", "verdict": "", "answer": ""}
+        (self.dir / "state/_answers.json").write_text(json.dumps(raw))
+        self.assertEqual(set(self.run_obj.answers_lenient()), {"q1"})
+        run("build", self.dir)
+        self.assertIn("KEEP ME", (self.dir / "dashboard.html").read_text())
+
+    def test_done_without_a_summary_is_refused_by_the_cli_and_by_check(self):
+        with self.assertRaises(SystemExit):
+            run("set", self.dir, "market", "--status", "done")
+        st = self.run_obj.read_agent("market")
+        st.status = "done"
+        self.run_obj.write_agent(st)          # a hand-written file can still say it
+        self.fill_context()
+        self.assertEqual(run("check", self.dir), 1)
+        self.assertIn("done with an empty summary", LAST_OUT)
+
+
+class TestPortRange(Base):
+    def test_a_port_outside_the_range_is_refused_by_the_parser(self):
+        for bad in ("-1", "99999"):
+            with self.subTest(port=bad), self.assertRaises(SystemExit):
+                run("serve", self.dir, "--port", bad)
+
+    def test_a_non_numeric_port_is_refused(self):
+        with self.assertRaises(SystemExit):
+            run("serve", self.dir, "--port", "nope")
+
+
 class TestAnswersAndChecks(Base):
     def test_answer_rejects_an_unknown_question_id(self):
         with self.assertRaises(SystemExit) as cm:
@@ -310,6 +353,11 @@ class TestAnswersAndChecks(Base):
         a = self.run_obj.answers()["q1"]
         self.assertEqual((a.verdict, a.answer, a.confidence), ("Renegotiate", "second", "high"))
         self.assertEqual(len(self.run_obj.answers()), 1)
+
+    def test_init_points_at_a_backgrounded_server(self):
+        """Its own next step used to block the terminal it was printed into."""
+        self.assertIn("nohup python3", LAST_OUT)
+        self.assertIn("serve.log", LAST_OUT)
 
     def test_init_prints_the_question_ids_to_answer(self):
         import tests.test_sprint as mod  # the CLI's stdout was captured by run()
@@ -630,6 +678,19 @@ class TestServer(Base):
 
     def test_an_oversized_body_is_refused(self):
         self.refused(413, payload={"id": "x", "answer": "y" * 70000})
+
+    def test_a_burst_of_answers_keeps_every_row(self):
+        """The default listen backlog dropped connections, and answers with them."""
+        import concurrent.futures as futures
+
+        def send(i):
+            return self.post("/answer", {"id": f"{i:010x}", "agent": "market",
+                                         "question": f"q{i}", "answer": f"a{i}"})[0]
+
+        with futures.ThreadPoolExecutor(40) as pool:
+            codes = list(pool.map(send, range(40)))
+        self.assertEqual(codes.count(200), 40)
+        self.assertEqual(len(self.run_obj.feedback()), 40)
 
     def test_a_negative_content_length_is_refused(self):
         """read(-1) reads to EOF, which walked straight past the size limit."""
