@@ -96,7 +96,7 @@ class Run:
         try:
             return self.read_agent(name), ""
         except ValidationError as exc:
-            return AgentState(name=name, status="blocked",
+            return AgentState(name=name, status="rejected",
                               summary=f"state file rejected: {exc}"), str(exc)
 
     def write_agent(self, st: AgentState) -> None:
@@ -189,6 +189,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     run = Run(Path(args.dir).resolve())
     if run.manifest_path.exists() and not args.force:
         raise SystemExit(f"{run.manifest_path} already exists. Pass --force to overwrite the manifest.")
+    if not args.title.strip():
+        raise SystemExit("--title is required: it is the page heading and the FINDINGS.md title")
     if not args.agent:
         raise SystemExit("--agent is required: a sprint with no roster renders an empty page")
     if not args.question:
@@ -269,6 +271,12 @@ def cmd_build(args: argparse.Namespace) -> int:
     out = Path(args.out) if args.out else run.root / "dashboard.html"
     out.write_text(render.page(m, states, answers, feedback, logs, live=False))
     print(out)
+    # WHY warn rather than fail: the page must render whatever the state is. But a
+    # rejected file used to leave build looking successful while check exited 1.
+    for st in states:
+        if st.status == "rejected":
+            print(f"warning  {st.name}.json was rejected and renders as rejected: "
+                  f"{st.summary}", file=sys.stderr)
     return 0
 
 
@@ -456,8 +464,10 @@ def cmd_findings(args: argparse.Namespace) -> int:
         lines.append("")
     rows = [(s.name, d) for s in states for d in s.defaults]
     if rows:
-        lines += ["## Defaults taken", "", "| Agent | Decision | Cost if wrong |", "|---|---|---|"]
-        lines += [f"| {n} | {_cell(d.decision)} | {_cell(d.cost_if_wrong)} |" for n, d in rows] + [""]
+        lines += ["## Defaults taken", "",
+                  "| Agent | Decision | Why | Cost if wrong |", "|---|---|---|---|"]
+        lines += [f"| {n} | {_cell(d.decision)} | {_cell(d.rationale)} | {_cell(d.cost_if_wrong)} |"
+                  for n, d in rows] + [""]
     rows = [(s.name, u) for s in states for u in s.unknowns]
     if rows:
         lines += ["## Still unknown", "", "| Agent | Question | Why it matters |", "|---|---|---|"]
@@ -470,8 +480,10 @@ def cmd_findings(args: argparse.Namespace) -> int:
         lines += [f"| {c.owner} | {_cell(c.step)} | {_cell(c.source)} | {n} |" for n, c in rows] + [""]
     rows = [(s.name, ev) for s in states for ev in s.evidence]
     if rows:
-        lines += ["## Evidence", "", "| Claim | Source | Date | Verified by |", "|---|---|---|---|"]
-        lines += [f"| {_cell(ev.claim)} | {_cell(ev.source)} | {ev.date} | {ev.verified_by or 'unverified'} |"
+        lines += ["## Evidence", "",
+                  "| Claim | Source | Date | Verified by | Quote |", "|---|---|---|---|---|"]
+        lines += [f"| {_cell(ev.claim)} | {_cell(ev.source)} | {ev.date} | "
+                  f"{ev.verified_by or 'unverified'} | {_cell(ev.quote)} |"
                   for _, ev in rows] + [""]
     out.write_text("\n".join(lines))
     print(out)
@@ -608,7 +620,11 @@ def make_handler(run: Run):
             if self.path.split("?", 1)[0] != "/answer":
                 self._send(404, b"not found", "text/plain")
                 return
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self._send(400, b"bad request: Content-Length is not a number", "text/plain")
+                return
             if length > 64_000:  # WHY: a typed answer is never this long
                 self._send(413, b"too large", "text/plain")
                 return

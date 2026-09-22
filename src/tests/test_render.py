@@ -134,6 +134,60 @@ class TestAnswers(unittest.TestCase):
         self.assertIn("high confidence", html)
 
 
+class TestEvidenceIsVisible(unittest.TestCase):
+    """Sourced claims are the deliverable's backing. A count of them is not enough."""
+
+    def state(self):
+        return AgentState(name="lease", status="done", summary="s", evidence=[
+            schema.Evidence(claim="The escalator is fixed at 3.5%",
+                            source="https://example.com/lease#12.1", date="2026-09-20",
+                            quote="three and one half percent", verified_by="coordinator")])
+
+    def test_the_claim_source_date_and_quote_all_reach_the_page(self):
+        html = render.aggregate_region([self.state()])
+        for text in ("The escalator is fixed at 3.5%", "2026-09-20",
+                     "three and one half percent", "coordinator"):
+            self.assertIn(text, html)
+
+    def test_an_http_source_is_a_link_in_the_evidence_table(self):
+        self.assertIn('href="https://example.com/lease#12.1"',
+                      render.aggregate_region([self.state()]))
+
+    def test_unverified_evidence_says_so(self):
+        st = AgentState(name="m", evidence=[
+            schema.Evidence(claim="c", source="s", date="2026-01-01")])
+        self.assertIn("unverified", render.aggregate_region([st]))
+
+    def test_a_defaults_rationale_is_shown_next_to_its_decision(self):
+        st = AgentState(name="m", defaults=[schema.Default(
+            decision="Assume 3.5%", rationale="Schedule B applies it to every term",
+            cost_if_wrong="about 40 thousand dollars")])
+        html = render.aggregate_region([st])
+        self.assertIn("Schedule B applies it to every term", html)
+        self.assertIn("about 40 thousand dollars", html)
+
+    def test_an_empty_evidence_table_says_so(self):
+        self.assertIn("No sourced claim yet", render.aggregate_region([]))
+
+
+class TestRejectedState(unittest.TestCase):
+    def test_a_rejected_file_is_counted_apart_from_a_blocked_agent(self):
+        blocked = AgentState(name="a", status="blocked", summary="waiting on the landlord")
+        rejected = AgentState(name="b", status="rejected", summary="state file rejected: x")
+        c = render.counts([blocked, rejected], {})
+        self.assertEqual((c["blocked"], c["rejected"]), (1, 1))
+
+    def test_a_rejected_card_says_the_file_was_rejected(self):
+        html = render.agents_region(
+            [AgentState(name="b", status="rejected", summary="state file rejected: x")], {})
+        self.assertIn("file rejected", html)
+
+    def test_the_pills_name_an_unreadable_file(self):
+        html = render.pills_region(
+            [AgentState(name="b", status="rejected", summary="x")], {})
+        self.assertIn("1 unreadable", html)
+
+
 class TestPayload(unittest.TestCase):
     def test_regions_and_hashes_line_up(self):
         p = render.state_payload(manifest(), [], {}, {}, {})

@@ -24,6 +24,9 @@ from pathlib import Path
 from typing import Any, get_args, get_origin
 
 STATUSES = ("queued", "running", "blocked", "done")
+# WHY separate: "rejected" is set by the reader when a state file will not parse,
+# never by an agent. Counting it as blocked hid a broken file behind a real one.
+RENDER_STATUSES = STATUSES + ("rejected",)
 CONFIDENCES = ("high", "medium", "low")
 
 # WHY 10 hex chars: short enough to read in a URL or a log line, and 40 bits of

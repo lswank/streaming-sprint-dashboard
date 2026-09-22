@@ -75,6 +75,12 @@ class TestInit(Base):
         run("init", self.dir, "--title", "again", "--question", "q?", "--agent", "market", "--force")
         self.assertEqual(self.run_obj.read_agent("market").summary, "kept")
 
+    def test_an_empty_title_is_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            run("init", self.dir.parent / "untitled", "--title", "  ",
+                "--question", "q?", "--agent", "market")
+        self.assertIn("--title is required", str(cm.exception))
+
     def test_init_without_a_roster_is_refused(self):
         with self.assertRaises(SystemExit) as cm:
             run("init", self.dir.parent / "empty", "--title", "t", "--question", "q?")
@@ -339,6 +345,17 @@ class TestOutputs(Base):
         run("findings", self.dir)
         self.assertIn("Blocked agents: market.", (self.dir / "FINDINGS.md").read_text())
 
+    def test_findings_carries_the_quote_and_the_rationale(self):
+        run("add", self.dir, "market", "evidence", "--claim", "rate is 14",
+            "--source", "sheet.pdf", "--date", "2026-09-20", "--quote", "fourteen dollars")
+        run("add", self.dir, "market", "default", "--decision", "Assume 14",
+            "--rationale", "the only sheet that is current",
+            "--cost-if-wrong", "overstates the year by 20 thousand dollars")
+        run("findings", self.dir)
+        md = (self.dir / "FINDINGS.md").read_text()
+        self.assertIn("fourteen dollars", md)
+        self.assertIn("the only sheet that is current", md)
+
     def test_findings_marks_an_unsourced_answer_as_a_hypothesis(self):
         run("answer", self.dir, "q1", "--verdict", "Leave", "--answer", "because")
         run("findings", self.dir)
@@ -357,6 +374,14 @@ class TestBrokenFiles(Base):
         (self.dir / "state/_answers.json").write_text("{not json")
         self.assertEqual(run("build", self.dir), 0)
         self.assertIn("Renew or leave?", (self.dir / "dashboard.html").read_text())
+
+    def test_build_warns_about_a_rejected_state_file(self):
+        (self.dir / "state/market.json").write_text("{oops")
+        import contextlib, io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(run("build", self.dir), 0)
+        self.assertIn("market.json was rejected", err.getvalue())
 
     def test_a_corrupt_answers_file_is_named_by_check(self):
         (self.dir / "state/_answers.json").write_text("{not json")

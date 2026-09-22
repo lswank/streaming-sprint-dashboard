@@ -227,7 +227,7 @@ Run these. Do not reimplement any of them in a prompt.
 | `sprint.py add` | Appends an `unknown`, `default`, `confirm`, `evidence` or `ask` row. `ask` prints a stable question id and is safe to repeat. |
 | `sprint.py answer` | Records the coordinator's answer to one asked question. |
 | `sprint.py replies` | What the human has answered so far. |
-| `sprint.py check` | Validates every file against the contract. Exit 1 with the reasons. |
+| `sprint.py check` | Validates every file against the contract. Exit 1 on any error, with the reasons. An agent that wrote state without being on the roster is a warning, not an error. |
 | `sprint.py findings` | Writes `FINDINGS.md` from the same state. |
 | `sprint.py demo` | Fills a run with example state, to see the page in about five seconds. |
 

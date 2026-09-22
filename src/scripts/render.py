@@ -20,7 +20,8 @@ from schema import AgentState, Answer, Manifest, qid
 LOG_TAIL_LINES = 12          # WHY: a card stays under one screenful at phone width
 MAX_LOG_LINE_CHARS = 200     # WHY: one runaway line must not stretch the grid
 
-STATUS_LABEL = {"queued": "queued", "running": "running", "blocked": "blocked", "done": "done"}
+STATUS_LABEL = {"queued": "queued", "running": "running", "blocked": "blocked",
+                "done": "done", "rejected": "file rejected"}
 
 
 def e(text: object) -> str:
@@ -171,12 +172,23 @@ def aggregate_region(states: Iterable[AgentState]) -> str:
     defaults = [(st.name, d) for st in states for d in st.defaults]
     confirm = [(st.name, c) for st in states for c in st.confirm]
 
+    evidence = [(st.name, ev) for st in states for ev in st.evidence]
+
+    e_rows = "".join(
+        f'<tr><td class="agent">{e(n)}</td><td>{e(ev.claim)}'
+        + (f'<div class="quote">{e(ev.quote)}</div>' if ev.quote else "")
+        + f'</td><td class="dim">{_source_link(ev.source)}</td>'
+        f'<td class="dim nowrap">{e(ev.date)}</td>'
+        f'<td class="dim">{e(ev.verified_by or "unverified")}</td></tr>'
+        for n, ev in evidence
+    )
     u_rows = "".join(
         f'<tr><td class="agent">{e(n)}</td><td>{e(u.question)}</td>'
         f'<td class="dim">{e(u.why_it_matters)}</td></tr>' for n, u in unknowns
     )
     d_rows = "".join(
-        f'<tr><td class="agent">{e(n)}</td><td>{e(d.decision)}</td>'
+        f'<tr><td class="agent">{e(n)}</td><td>{e(d.decision)}'
+        f'<div class="quote">{e(d.rationale)}</div></td>'
         f'<td class="dim">{e(d.cost_if_wrong)}</td></tr>' for n, d in defaults
     )
     c_rows = "".join(
@@ -184,6 +196,8 @@ def aggregate_region(states: Iterable[AgentState]) -> str:
         f'<td class="dim">{e(c.owner)}</td></tr>' for n, c in confirm
     )
     return "".join([
+        _table("Evidence", ("agent", "claim", "source", "date", "verified by"), e_rows,
+               "No sourced claim yet."),
         _table("Open unknowns", ("agent", "question", "why it matters"), u_rows,
                "Nothing open."),
         _table("Defaults taken", ("agent", "decision", "cost if wrong"), d_rows,
@@ -210,6 +224,7 @@ def counts(states: Iterable[AgentState], feedback: dict[str, dict]) -> dict[str,
         "done": sum(1 for s in states if s.status == "done"),
         "running": sum(1 for s in states if s.status == "running"),
         "blocked": sum(1 for s in states if s.status == "blocked"),
+        "rejected": sum(1 for s in states if s.status == "rejected"),
         "waiting": waiting,
     }
 
@@ -219,7 +234,9 @@ def pills_region(states: Iterable[AgentState], feedback: dict[str, dict]) -> str
     c = counts(states, feedback)
     out = [f'<span class="pill">{c["agents"]} {plural(c["agents"], "agent")}</span>']
     for key, label, cls in (("running", "running", "run"), ("done", "done", "ok"),
-                            ("blocked", "blocked", "warn"), ("waiting", "need you", "need")):
+                            ("blocked", "blocked", "warn"),
+                            ("rejected", "unreadable", "warn"),
+                            ("waiting", "need you", "need")):
         if c[key]:
             out.append(f'<span class="pill {cls}">{c[key]} {label}</span>')
     return "".join(out)
@@ -456,6 +473,10 @@ button:hover { border-color: var(--accent); color: var(--accent); }
    today, but one long owner or step must scroll inside its own table rather than
    make the whole page scroll sideways. */
 .tbl { margin-bottom: 14px; overflow-x: auto; }
+.quote { font-size: 12px; color: var(--dim); margin-top: 3px; border-left: 2px solid var(--line);
+         padding-left: 7px; }
+td.nowrap { white-space: nowrap; }
+.card.s-rejected .dot { background: var(--warn); }
 .tbl h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--dim);
           margin-bottom: 6px; }
 table { width: 100%; border-collapse: collapse; background: var(--panel);
