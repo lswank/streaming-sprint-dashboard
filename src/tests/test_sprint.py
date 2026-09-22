@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import schema
 import sprint
-from schema import AgentState, qid
+from schema import AgentState, ValidationError, qid
 
 
 LAST_OUT = ""
@@ -42,6 +42,13 @@ class Base(unittest.TestCase):
             "--question", "Renew or leave?", "--question", "What does leaving cost?",
             "--agent", "market:rates and comparables", "--agent", "exit-cost")
         self.run_obj = sprint.Run(self.dir)
+
+    def fill_context(self):
+        """What a coordinator does before launching: paste the real request."""
+        p = self.dir / "CONTEXT.md"
+        p.write_text(p.read_text().replace(
+            "> (paste the exact words that triggered this sprint)",
+            "> Renew, renegotiate or leave, and what does leaving cost?"))
 
 
 class TestInit(Base):
@@ -134,6 +141,17 @@ class TestWrites(Base):
         self.assertEqual(len(ev), 1)
         self.assertEqual(ev[0].source, "https://example.com/l")
 
+    def test_an_ask_prints_the_id_of_the_text_it_actually_stored(self):
+        """The stored text is cleaned, so an id from the raw argument would never match."""
+        run("add", self.dir, "market", "ask", "--question", "Is a gap ok?\u202e",
+            "--option", "Yes")
+        printed = LAST_OUT.strip()
+        stored = self.run_obj.read_agent("market").human_input[0].question
+        self.assertEqual(printed, qid("market", stored))
+        run("add", self.dir, "market", "ask", "--question", "Is a gap ok?\u202e",
+            "--option", "Yes")
+        self.assertEqual(len(self.run_obj.read_agent("market").human_input), 1)
+
     def test_ask_is_idempotent(self):
         run("add", self.dir, "market", "ask", "--question", "Gap ok?", "--option", "Yes")
         run("add", self.dir, "market", "ask", "--question", "Gap ok?", "--option", "Yes")
@@ -223,6 +241,19 @@ class TestAgentNames(Base):
         self.assertEqual(run("set", self.dir, "/tmp/sprint-traversal-probe", "--summary", "x"), 1)
         self.assertFalse(Path("/tmp/sprint-traversal-probe.json").exists())
 
+    def test_a_duplicate_roster_name_is_refused(self):
+        with self.assertRaises(SystemExit) as cm:
+            run("init", self.dir.parent / "dupe", "--title", "T", "--question", "q?",
+                "--agent", "market:one", "--agent", "market:two")
+        self.assertIn("already on the roster", str(cm.exception))
+
+    def test_a_case_only_duplicate_is_refused_too(self):
+        """One state file per name, and the filesystem may not distinguish case."""
+        with self.assertRaises(SystemExit) as cm:
+            run("init", self.dir.parent / "dupe2", "--title", "T", "--question", "q?",
+                "--agent", "Market:upper", "--agent", "market:lower")
+        self.assertIn("already on the roster", str(cm.exception))
+
     def test_a_bad_roster_name_is_refused_at_init(self):
         with self.assertRaises(SystemExit) as cm:
             run("init", self.dir.parent / "bad", "--title", "t", "--question", "q?",
@@ -297,31 +328,51 @@ class TestAnswersAndChecks(Base):
         self.assertIn("market", str(cm.exception))
 
     def test_check_names_the_questions_still_to_answer(self):
+        self.fill_context()
         run("answer", self.dir, "q1", "--verdict", "v", "--answer", "a")
         run("check", self.dir)
         import tests.test_sprint as mod
         self.assertIn("still to answer: q2", mod.LAST_OUT)
 
-    def test_check_passes_on_a_fresh_run(self):
+    def test_check_refuses_a_run_whose_request_was_never_pasted_in(self):
+        """CONTEXT.md is what every agent reads first; the placeholder is not a request."""
+        self.assertEqual(run("check", self.dir), 1)
+        self.assertIn("CONTEXT.md still holds the placeholder", LAST_OUT)
+
+    def test_check_passes_once_the_request_is_in_context(self):
+        self.fill_context()
         self.assertEqual(run("check", self.dir), 0)
 
+    def test_check_refuses_a_run_with_an_empty_roster(self):
+        self.fill_context()
+        m = json.loads((self.dir / "manifest.json").read_text())
+        m["roster"] = []
+        (self.dir / "manifest.json").write_text(json.dumps(m))
+        for stale in (self.dir / "state").glob("*.json"):
+            stale.unlink()
+        self.assertEqual(run("check", self.dir), 1)
+
     def test_check_catches_a_done_agent_with_no_summary(self):
+        self.fill_context()
         st = self.run_obj.read_agent("market")
         st.status = "done"
         self.run_obj.write_agent(st)
         self.assertEqual(run("check", self.dir), 1)
 
     def test_check_catches_a_hand_edited_state_file(self):
+        self.fill_context()
         (self.dir / "state/market.json").write_text('{"name": "market", "status": "winning"}')
         self.assertEqual(run("check", self.dir), 1)
 
     def test_check_catches_a_one_word_cost_if_wrong(self):
+        self.fill_context()
         st = self.run_obj.read_agent("market")
         st.defaults.append(schema.Default(decision="d", rationale="r", cost_if_wrong="bad"))
         self.run_obj.write_agent(st)
         self.assertEqual(run("check", self.dir), 1)
 
     def test_check_catches_a_filename_that_does_not_match_the_name_inside(self):
+        self.fill_context()
         (self.dir / "state/market.json").write_text('{"name": "markets"}')
         self.assertEqual(run("check", self.dir), 1)
 
@@ -368,6 +419,16 @@ class TestOutputs(Base):
         run("findings", self.dir)
         self.assertIn("Blocked agents: market.", (self.dir / "FINDINGS.md").read_text())
 
+    def test_a_typed_answer_cannot_inject_markdown_into_findings(self):
+        self.fill_context()
+        self.run_obj.append_feedback({"id": "abcdef0123", "agent": "market",
+                                      "question": "Gap ok?",
+                                      "answer": "yes\n\n## injected heading"})
+        run("findings", self.dir)
+        md = (self.dir / "FINDINGS.md").read_text()
+        self.assertNotIn("\n## injected heading", md)
+        self.assertIn("`yes ## injected heading`", md)
+
     def test_findings_carries_the_quote_and_the_rationale(self):
         run("add", self.dir, "market", "evidence", "--claim", "rate is 14",
             "--source", "sheet.pdf", "--date", "2026-09-20", "--quote", "fourteen dollars")
@@ -388,6 +449,89 @@ class TestOutputs(Base):
         run("add", self.dir, "market", "unknown", "--question", "a|b", "--why", "matters")
         run("findings", self.dir)
         self.assertIn("a\\|b", (self.dir / "FINDINGS.md").read_text())
+
+
+class TestSymlinks(Base):
+    """A run directory holds real files. A symlink in it is a write somewhere else."""
+
+    def setUp(self):
+        super().setUp()
+        self.outside = self.dir.parent / "outside"
+        self.outside.mkdir()
+
+    def test_a_symlinked_log_cannot_be_written_through(self):
+        target = self.outside / "pwned.log"
+        (self.dir / "state/market.log").symlink_to(target)
+        self.assertEqual(run("log", self.dir, "market", "secret"), 1)
+        self.assertFalse(target.exists())
+
+    def test_a_symlinked_state_file_is_not_read(self):
+        (self.outside / "o.json").write_text('{"name": "market", "summary": "OUTSIDE"}')
+        (self.dir / "state/market.json").unlink()
+        (self.dir / "state/market.json").symlink_to(self.outside / "o.json")
+        run("build", self.dir)
+        self.assertNotIn("OUTSIDE", (self.dir / "dashboard.html").read_text())
+
+    def test_a_symlinked_state_directory_is_refused_at_init(self):
+        run_dir = self.dir.parent / "linked"
+        run_dir.mkdir()
+        (run_dir / "state").symlink_to(self.outside)
+        with self.assertRaises(SystemExit) as cm:
+            run("init", run_dir, "--title", "T", "--question", "q?", "--agent", "market")
+        self.assertIn("symbolic link", str(cm.exception))
+        self.assertFalse((self.outside / "market.json").exists())
+
+    def test_a_symlinked_feedback_file_cannot_be_written_through(self):
+        target = self.outside / "fb.jsonl"
+        (self.dir / "state/_feedback.jsonl").symlink_to(target)
+        with self.assertRaises(ValidationError):
+            self.run_obj.append_feedback({"id": "abcdef0123", "answer": "leak"})
+        self.assertFalse(target.exists())
+
+
+class TestLongLogLine(Base):
+    def test_a_line_longer_than_the_window_still_shows_something(self):
+        path = self.dir / "state/market.log"
+        path.write_text("visible-early\n" + "Z" * (sprint.Run.LOG_TAIL_BYTES + 5000))
+        lines = self.run_obj.read_logs()["market"]
+        self.assertTrue(lines, "the card would show nothing at all")
+        self.assertIn("truncated", lines[0])
+
+
+class TestRepeatableDemo(unittest.TestCase):
+    def test_running_demo_twice_does_not_double_the_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "demo"
+            run("demo", root)
+            first = json.loads((root / "state/lease-terms.json").read_text())
+            run("demo", root)
+            second = json.loads((root / "state/lease-terms.json").read_text())
+            self.assertEqual(len(first["evidence"]), len(second["evidence"]))
+            self.assertEqual(len(first["defaults"]), len(second["defaults"]))
+            self.assertEqual(len((root / "state/lease-terms.log").read_text().splitlines()),
+                             len(first["evidence"]) + 2)
+
+
+class TestReInit(Base):
+    def test_an_answer_whose_question_changed_is_retired(self):
+        self.fill_context()
+        run("answer", self.dir, "q1", "--verdict", "OLD", "--answer", "a")
+        run("init", self.dir, "--title", "T", "--question", "A different first question",
+            "--question", "What does leaving cost?", "--agent", "market", "--force")
+        self.assertNotIn("q1", self.run_obj.answers())
+        self.assertTrue(list((self.dir / "state").glob("_answers.retired-*.json")))
+
+    def test_an_answer_whose_question_is_unchanged_survives(self):
+        self.fill_context()
+        run("answer", self.dir, "q2", "--verdict", "KEEP", "--answer", "a")
+        run("init", self.dir, "--title", "T", "--question", "A different first question",
+            "--question", "What does leaving cost?", "--agent", "market", "--force")
+        self.assertEqual(self.run_obj.answers()["q2"].verdict, "KEEP")
+
+    def test_reinit_names_the_questions_context_does_not_mention(self):
+        run("init", self.dir, "--title", "T", "--question", "Something entirely new",
+            "--agent", "market", "--force")
+        self.assertIn("CONTEXT.md does not mention", LAST_OUT)
 
 
 class TestBrokenFiles(Base):
@@ -486,6 +630,20 @@ class TestServer(Base):
 
     def test_an_oversized_body_is_refused(self):
         self.refused(413, payload={"id": "x", "answer": "y" * 70000})
+
+    def test_a_negative_content_length_is_refused(self):
+        """read(-1) reads to EOF, which walked straight past the size limit."""
+        body = json.dumps({"id": "abcdef0123", "answer": "z" * 100_000}).encode()
+        req = urllib.request.Request(self.base + "/answer", data=body,
+                                     headers={"Content-Type": "application/json"})
+        req.add_header("Content-Length", "-1")
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req, timeout=5)
+        self.addCleanup(cm.exception.close)
+        self.assertEqual(cm.exception.code, 400)
+
+    def test_an_empty_id_is_refused_because_it_can_never_match_a_card(self):
+        self.refused(400, payload={"id": "", "answer": "yes"})
 
     def test_nothing_else_is_served(self):
         for path in ("/manifest.json", "/state/market.json", "/../manifest.json", "/index.html"):

@@ -70,5 +70,8 @@ Installed $SKILL for $HOST:
 
 See the page before trusting it, in about five seconds:
   python3 "$TARGET/scripts/sprint.py" demo ./sprint-demo
-  python3 "$TARGET/scripts/sprint.py" serve ./sprint-demo
+  python3 "$TARGET/scripts/sprint.py" serve ./sprint-demo --open
+
+The second command serves until you stop it with Ctrl-C. To keep the terminal:
+  nohup python3 "$TARGET/scripts/sprint.py" serve ./sprint-demo > serve.log 2>&1 &
 MSG

@@ -457,7 +457,8 @@ main { padding: 16px; display: grid; gap: 22px; max-width: 1180px; margin: 0 aut
 .nosource { font-size: 12px; color: var(--warn); margin: 6px 0 0; }
 
 .block.need h2 { color: var(--need); }
-.qgrid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.qgrid { display: grid; gap: 10px;
+         grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
 .q { background: var(--panel); border: 1px solid var(--need); border-radius: var(--r);
      padding: 12px 14px; transition: opacity .18s ease; }
 .q.done { border-color: var(--line); opacity: .72; }
@@ -477,8 +478,13 @@ button:hover { border-color: var(--accent); color: var(--accent); }
 .given { margin-top: 8px; font-size: 13px; border-left: 2px solid var(--accent); padding-left: 8px; }
 .answered summary { font-size: 12px; color: var(--dim); cursor: pointer; margin-bottom: 8px; }
 
-.cards { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; }
+/* min() so the column can never be wider than the viewport, and anywhere-wrap so
+   a 64 character agent name breaks instead of pushing the card off screen. */
+.cards { display: grid; gap: 10px;
+         grid-template-columns: repeat(auto-fit, minmax(min(310px, 100%), 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+        padding: 12px 14px; min-width: 0; }
+.card h3, .q .qtext, .ans .qtext { overflow-wrap: anywhere; }
 .card header { display: flex; align-items: center; gap: 7px; }
 .card .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); margin-left: auto; }
 .card.s-running .dot { background: var(--accent); animation: breathe 2.4s ease-in-out infinite; }

@@ -61,6 +61,27 @@ class ValidationError(ValueError):
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
+def no_symlink(path: Path, stop_at: Path) -> Path:
+    """Refuse a path that is a symlink, or that sits under one inside the run.
+
+    WHY: the run directory is written by agents and read by a server. A symlink
+    planted at state/, state/<agent>.json or state/<agent>.log otherwise turns
+    every write into a write somewhere else, and every read into a disclosure.
+
+    Only the part of the path inside the run is checked: the run directory itself
+    may legitimately sit under a symlinked path, as /tmp does on macOS.
+    """
+    current = path
+    while True:
+        if current.is_symlink():
+            raise ValidationError([
+                f"{path.name}: {current} is a symbolic link; a run directory must "
+                f"contain only real files and directories"])
+        if current == stop_at or current.parent == current:
+            return path
+        current = current.parent
+
+
 def check_agent_name(name: str) -> str:
     """Return the name, or raise. Called on every path that turns a name into a file."""
     if not AGENT_NAME_RE.match(name or ""):

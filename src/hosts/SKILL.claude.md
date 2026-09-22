@@ -16,16 +16,33 @@ A bounded fan-out whose findings render live to a page a human can click. Agents
 write JSON through `sprint.py`; the scripts own the schema, the ids, the atomic
 writes and every pixel of the HTML. Nothing here improvises markup.
 
-`$SPRINT` below means `scripts/sprint.py` inside this skill's own directory,
-which is the directory this file is in. Set it once before anything else:
+Two shell variables carry the whole skill. Set them before anything else.
+
+`SPRINT` is `scripts/sprint.py` inside this skill's own directory, the directory
+this file sits in. The host that loaded this skill knows that path; if it does
+not, search for it and use the first hit:
 
 ```bash
-SPRINT="<this skill dir>/scripts/sprint.py"
-python3 "$SPRINT" --help          # if this fails, nothing below will work
+SPRINT=$(ls -d "$HOME"/.claude/skills/streaming-sprint-dashboard/scripts/sprint.py \
+               "$HOME"/.codex/skills/streaming-sprint-dashboard/scripts/sprint.py \
+               "$HOME"/.grok/skills/streaming-sprint-dashboard/scripts/sprint.py \
+               2>/dev/null | head -1)
+python3 "$SPRINT" --help >/dev/null || echo "set SPRINT by hand: this file's directory + /scripts/sprint.py"
 ```
 
-If the skill directory is not known, find it:
-`find ~ -maxdepth 5 -path '*/skills/streaming-sprint-dashboard/scripts/sprint.py' 2>/dev/null`.
+Those are the three places a host installs a skill. If it was unpacked somewhere
+else, use the path the host reported for this file; do not run a `find` over the
+whole home directory, which takes minutes.
+
+`RUN` is the run directory, which does not exist yet. Put it where the work
+lives, not in a temp directory: the user comes back to `FINDINGS.md`.
+
+```bash
+RUN="$HOME/work/lease-2026/sprint"   # change this to where the work lives
+```
+
+Every command below uses `"$SPRINT"` and `"$RUN"`, so it runs as written once
+those two are set.
 
 ## Do not use this when
 
@@ -58,7 +75,7 @@ Sprint progress:
 ## 1. Scaffold
 
 ```bash
-python3 "$SPRINT" init RUNDIR --title "Renew, renegotiate or leave the warehouse?" \
+python3 "$SPRINT" init "$RUN" --title "Renew, renegotiate or leave the warehouse?" \
   --question "Do we renew, renegotiate or leave?" \
   --question "What does leaving actually cost?" \
   --question "Who has to sign off, and by when?" \
@@ -68,17 +85,20 @@ python3 "$SPRINT" init RUNDIR --title "Renew, renegotiate or leave the warehouse
   --agent "coordinator:what the coordinator verified first hand"
 ```
 
+`init` prints the question ids (`q1`, `q2`, `q3`). Those are what `answer` takes.
+
 `serve` runs until it is stopped, so start it in the background, never in the
-foreground of a turn:
+foreground of a turn, and wait for the URL rather than reading an empty file:
 
 ```bash
-nohup python3 "$SPRINT" serve RUNDIR --open > RUNDIR/serve.log 2>&1 &
-cat RUNDIR/serve.log     # the URL, once it has printed
+PORT=8787       # a second sprint on this machine needs a different one
+nohup python3 "$SPRINT" serve "$RUN" --port "$PORT" --open > "$RUN/serve.log" 2>&1 &
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q http "$RUN/serve.log" && break; sleep 0.3; done
+cat "$RUN/serve.log"     # the URL, or the reason it could not serve
 ```
 
-Put `RUNDIR` where the work lives, not in a temp directory: the user will come
-back to `FINDINGS.md`. Give the user the URL, then fill in `CONTEXT.md` before
-launching anyone.
+Give the user that URL. Then fill in `CONTEXT.md`: `check` refuses to pass while
+the request placeholder is still in it, which is the point.
 
 ## 2. CONTEXT.md carries everything shared
 
@@ -112,30 +132,33 @@ Give the legwork to cheaper models and keep the verification for this session.
 
 One message, one `Agent` call per roster entry **except `coordinator`**, all in
 parallel. The coordinator is this session: never spawn a subagent for it.
-Each prompt:
+
+Each subagent gets the same shape of prompt, with its own name and its own
+question, and with `$RUN` and `$SPRINT` written out in full, because a subagent
+inherits neither variable:
 
 ```
-You are the `exit-cost` agent on sprint /work/lease-2026/sprint.
+You are the `exit-cost` agent on sprint <RUN>.
 
-Read /work/lease-2026/sprint/SCHEMA.md first, then CONTEXT.md in the same
-directory. SCHEMA.md is the contract: every report goes through sprint.py, at
-/path/to/skill/scripts/sprint.py, never by editing JSON.
+Read <RUN>/SCHEMA.md first, then CONTEXT.md in the same directory. SCHEMA.md is
+the contract: every report goes through <SPRINT>, never by editing JSON.
 
 Your question, word for word from the manifest: What does leaving actually cost?
-Your remit: movers, downtime and the restoration clause. Not the rate, not the
-signoff; another agent owns each of those.
+Your remit: movers, downtime and the restoration clause. Not the lease terms,
+not the signoff; another agent owns each of those.
 
 Log every step as it happens. Do not batch your log at the end.
 
 Finish with these three, in this order:
-  python3 /path/to/skill/scripts/sprint.py check /work/lease-2026/sprint --agent exit-cost
-  python3 /path/to/skill/scripts/sprint.py replies /work/lease-2026/sprint
-  python3 /path/to/skill/scripts/sprint.py set /work/lease-2026/sprint exit-cost \
-    --status done --summary "<two sentences, with the number and its unit>"
+  python3 <SPRINT> check <RUN> --agent exit-cost
+  python3 <SPRINT> replies <RUN>
+  python3 <SPRINT> set <RUN> exit-cost --status done --summary "<two sentences>"
 ```
 
-Substitute the real run directory, the real skill path, and each agent's own
-question. Every agent gets the same shape, so the cards fill in the same way.
+`<RUN>` and `<SPRINT>` are the two paths written out in full, not variables: a
+subagent inherits neither. Substitute both, plus each agent's own question and
+remit, and check one prompt before sending. No `$RUN`, no `$SPRINT`, no angle
+brackets left.
 
 Do not hand an agent a second question because it finished early. Its file is
 its answer; a new question gets a new roster entry.
@@ -155,14 +178,14 @@ another researcher either: its job is to check what the others report.
   agents stop re-deriving them.
 - Distrust agent-supplied ids and cross-references. They drift. Match on
   content.
-- Watch `python3 "$SPRINT" replies RUNDIR` and pass new answers to the agent
+- Watch `python3 "$SPRINT" replies "$RUN"` and pass new answers to the agent
   that asked.
 - A card stuck on running with no new log lines means that agent died. Do not
   wait it out: read whatever it left, then set it blocked with the reason, so
   the page says what happened instead of implying work is still going on.
 
 ```bash
-python3 "$SPRINT" set RUNDIR exit-cost --status blocked \
+python3 "$SPRINT" set "$RUN" exit-cost --status blocked \
   --summary "process exited after the mover quote; restoration never priced"
 ```
 
@@ -172,7 +195,7 @@ Agents produce material. The answers to what was actually asked are written
 here, one per question, and they are allowed to contradict the question.
 
 ```bash
-python3 "$SPRINT" answer RUNDIR q1 \
+python3 "$SPRINT" answer "$RUN" q1 \
   --verdict "Renegotiate, do not renew as written" \
   --answer "Two sentences in plain words, with the number and its unit." \
   --confidence medium --source "executed-lease.pdf p.4 sec 12.1"
@@ -184,8 +207,8 @@ hypothesis, which is the honest label for it.
 ## 7. Finish
 
 ```bash
-python3 "$SPRINT" check RUNDIR       # must print ok
-python3 "$SPRINT" findings RUNDIR    # durable FINDINGS.md from the same state
+python3 "$SPRINT" check "$RUN"       # must print ok
+python3 "$SPRINT" findings "$RUN"    # durable FINDINGS.md from the same state
 ```
 
 File every confirmation step where the user tracks work, one task per row, with

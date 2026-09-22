@@ -110,7 +110,11 @@ Everything else is plumbing. These are enforced by the tool, not just described:
 
 A fourth, less visible one: every write is atomic and takes the file's lock, so
 an agent with several tool calls in flight cannot lose its own rows, and the page
-never renders a half-written file.
+never renders a half-written file. Forty parallel writers keep forty rows.
+
+The run directory is also treated as hostile: an agent name cannot escape it, a
+symlink planted inside it is refused rather than followed, and a state file that
+will not parse degrades one card instead of the page.
 
 ## What the run directory holds
 
@@ -138,9 +142,14 @@ is what says whether it is valid.
 - The page was clicked in a real browser: an option button and a typed answer
   both reached `state/_feedback.jsonl`, and the header count dropped without a
   reload.
-- The Codex variant's launch line is written from `codex exec --help` and has
-  not been run end to end. The flags are real; the fan-out is untested. Treat
-  that block as the one part of the package to check on first use.
+- Every shell block in every SKILL.md is executed by the package's own tests,
+  with the launcher stubbed: the scaffold runs, the server reports a URL, one
+  prompt file per agent is written with no unresolved variable, and each launch
+  command carries the flags that host needs.
+- The Codex variant's launch command is proven at the shell level that way, but
+  `codex exec` itself has never run this sprint end to end, because the Codex
+  workspace on the build machine has no credits. Treat that as the one part of
+  the package to watch on first use.
 - The layout was measured, not eyeballed: at a 390 pixel viewport nothing
   overflows, and every text colour pair in both palettes is at or above the
   WCAG AA ratio of 4.5 to 1 (the tightest is 4.82 to 1).

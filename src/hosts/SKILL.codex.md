@@ -16,16 +16,33 @@ A bounded fan-out whose findings render live to a page a human can click. Agents
 write JSON through `sprint.py`; the scripts own the schema, the ids, the atomic
 writes and every pixel of the HTML. Nothing here improvises markup.
 
-`$SPRINT` below means `scripts/sprint.py` inside this skill's own directory,
-which is the directory this file is in. Set it once before anything else:
+Two shell variables carry the whole skill. Set them before anything else.
+
+`SPRINT` is `scripts/sprint.py` inside this skill's own directory, the directory
+this file sits in. The host that loaded this skill knows that path; if it does
+not, search for it and use the first hit:
 
 ```bash
-SPRINT="<this skill dir>/scripts/sprint.py"
-python3 "$SPRINT" --help          # if this fails, nothing below will work
+SPRINT=$(ls -d "$HOME"/.claude/skills/streaming-sprint-dashboard/scripts/sprint.py \
+               "$HOME"/.codex/skills/streaming-sprint-dashboard/scripts/sprint.py \
+               "$HOME"/.grok/skills/streaming-sprint-dashboard/scripts/sprint.py \
+               2>/dev/null | head -1)
+python3 "$SPRINT" --help >/dev/null || echo "set SPRINT by hand: this file's directory + /scripts/sprint.py"
 ```
 
-If the skill directory is not known, find it:
-`find ~ -maxdepth 5 -path '*/skills/streaming-sprint-dashboard/scripts/sprint.py' 2>/dev/null`.
+Those are the three places a host installs a skill. If it was unpacked somewhere
+else, use the path the host reported for this file; do not run a `find` over the
+whole home directory, which takes minutes.
+
+`RUN` is the run directory, which does not exist yet. Put it where the work
+lives, not in a temp directory: the user comes back to `FINDINGS.md`.
+
+```bash
+RUN="$HOME/work/lease-2026/sprint"   # change this to where the work lives
+```
+
+Every command below uses `"$SPRINT"` and `"$RUN"`, so it runs as written once
+those two are set.
 
 ## Do not use this when
 
@@ -58,7 +75,7 @@ Sprint progress:
 ## 1. Scaffold
 
 ```bash
-python3 "$SPRINT" init RUNDIR --title "Renew, renegotiate or leave the warehouse?" \
+python3 "$SPRINT" init "$RUN" --title "Renew, renegotiate or leave the warehouse?" \
   --question "Do we renew, renegotiate or leave?" \
   --question "What does leaving actually cost?" \
   --question "Who has to sign off, and by when?" \
@@ -68,17 +85,20 @@ python3 "$SPRINT" init RUNDIR --title "Renew, renegotiate or leave the warehouse
   --agent "coordinator:what the coordinator verified first hand"
 ```
 
+`init` prints the question ids (`q1`, `q2`, `q3`). Those are what `answer` takes.
+
 `serve` runs until it is stopped, so start it in the background, never in the
-foreground of a turn:
+foreground of a turn, and wait for the URL rather than reading an empty file:
 
 ```bash
-nohup python3 "$SPRINT" serve RUNDIR --open > RUNDIR/serve.log 2>&1 &
-cat RUNDIR/serve.log     # the URL, once it has printed
+PORT=8787       # a second sprint on this machine needs a different one
+nohup python3 "$SPRINT" serve "$RUN" --port "$PORT" --open > "$RUN/serve.log" 2>&1 &
+for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q http "$RUN/serve.log" && break; sleep 0.3; done
+cat "$RUN/serve.log"     # the URL, or the reason it could not serve
 ```
 
-Put `RUNDIR` where the work lives, not in a temp directory: the user will come
-back to `FINDINGS.md`. Give the user the URL, then fill in `CONTEXT.md` before
-launching anyone.
+Give the user that URL. Then fill in `CONTEXT.md`: `check` refuses to pass while
+the request placeholder is still in it, which is the point.
 
 ## 2. CONTEXT.md carries everything shared
 
@@ -113,42 +133,57 @@ Give the legwork to cheaper models and keep the verification for this session.
 Write one prompt file per agent, then launch them all in the background.
 
 ```bash
-mkdir -p RUNDIR/prompts
-cat > RUNDIR/prompts/exit-cost.md <<PROMPT
-You are the \`exit-cost\` agent on sprint RUNDIR.
+mkdir -p "$RUN/prompts"
 
-Read RUNDIR/SCHEMA.md first, then RUNDIR/CONTEXT.md. SCHEMA.md is the contract:
+# One line per agent: name | the question it owns | its remit. The coordinator is
+# not here: that role is this session, not a process to launch.
+AGENTS=(
+  "lease-terms|Do we renew, renegotiate or leave?|the lease and its amendments; not the market, not the exit cost"
+  "exit-cost|What does leaving actually cost?|movers, downtime and the restoration clause; not the lease terms"
+  "signoff|Who has to sign off, and by when?|the board charter and the calendar; not the money"
+)
+
+for entry in "${AGENTS[@]}"; do
+  IFS='|' read -r name question remit <<< "$entry"
+  cat > "$RUN/prompts/$name.md" <<PROMPT
+You are the \`$name\` agent on sprint $RUN.
+
+Read $RUN/SCHEMA.md first, then $RUN/CONTEXT.md. SCHEMA.md is the contract:
 every report goes through $SPRINT, never by editing JSON.
 
-Your question, word for word from the manifest: What does leaving actually cost?
-Your remit: movers, downtime and the restoration clause. Not the rate, not the
-signoff; another agent owns each of those.
+Your question, word for word from the manifest: $question
+Your remit: $remit.
 
 Log every step as it happens. Do not batch the log at the end.
 
 Finish with these three, in this order:
-  python3 $SPRINT check RUNDIR --agent exit-cost
-  python3 $SPRINT replies RUNDIR
-  python3 $SPRINT set RUNDIR exit-cost --status done --summary "<two sentences>"
+  python3 $SPRINT check $RUN --agent $name
+  python3 $SPRINT replies $RUN
+  python3 $SPRINT set $RUN $name --status done --summary "<two sentences>"
 PROMPT
-
-MODEL=<a cheaper model for the legwork>
-for a in lease-terms exit-cost signoff; do    # the roster minus coordinator
-  nohup codex exec --skip-git-repo-check --sandbox workspace-write \
-    -C RUNDIR -m "$MODEL" --output-last-message "RUNDIR/state/$a.final" \
-    "$(cat "RUNDIR/prompts/$a.md")" > "RUNDIR/state/$a.stdout" 2>&1 &
 done
 ```
 
-`-C RUNDIR` with `--sandbox workspace-write` is what lets an agent write its own
-state file. If the scripts live outside `RUNDIR`, add `--add-dir <skill dir>`.
+The heredoc is unquoted on purpose, so `$RUN`, `$SPRINT`, `$name` and `$question`
+are substituted as each file is written. Check one before launching: every path
+in it should be absolute, with no `$` left.
 
-Each prompt file names its own agent and the one question that agent owns. The
-heredoc is unquoted on purpose, so `$SPRINT` and `RUNDIR` are substituted as the
-file is written and the agent reads absolute paths rather than placeholders.
+```bash
+MODEL=""        # optional: a cheaper model id for the legwork, e.g. MODEL=gpt-5-mini
+for entry in "${AGENTS[@]}"; do
+  name="${entry%%|*}"
+  nohup codex exec --skip-git-repo-check --sandbox workspace-write \
+    -C "$RUN" ${MODEL:+-m "$MODEL"} \
+    --output-last-message "$RUN/state/$name.final" \
+    "$(cat "$RUN/prompts/$name.md")" > "$RUN/state/$name.stdout" 2>&1 &
+done
+```
+
+`-C "$RUN"` with `--sandbox workspace-write` is what lets an agent write its own
+state file. If the scripts live outside `$RUN`, add `--add-dir "$(dirname "$SPRINT")"`.
 
 Every launched process gets its own stdout file: when a card stays queued, that
-file says why, and `python3 "$SPRINT" check RUNDIR --agent <name>` says whether
+file says why, and `python3 "$SPRINT" check "$RUN" --agent <name>` says whether
 what it wrote is valid.
 
 Watch the page rather than the processes. `wait` blocks until the whole fan-out
@@ -172,14 +207,14 @@ another researcher either: its job is to check what the others report.
   agents stop re-deriving them.
 - Distrust agent-supplied ids and cross-references. They drift. Match on
   content.
-- Watch `python3 "$SPRINT" replies RUNDIR` and pass new answers to the agent
+- Watch `python3 "$SPRINT" replies "$RUN"` and pass new answers to the agent
   that asked.
 - A card stuck on running with no new log lines means that agent died. Do not
   wait it out: read whatever it left, then set it blocked with the reason, so
   the page says what happened instead of implying work is still going on.
 
 ```bash
-python3 "$SPRINT" set RUNDIR exit-cost --status blocked \
+python3 "$SPRINT" set "$RUN" exit-cost --status blocked \
   --summary "process exited after the mover quote; restoration never priced"
 ```
 
@@ -189,7 +224,7 @@ Agents produce material. The answers to what was actually asked are written
 here, one per question, and they are allowed to contradict the question.
 
 ```bash
-python3 "$SPRINT" answer RUNDIR q1 \
+python3 "$SPRINT" answer "$RUN" q1 \
   --verdict "Renegotiate, do not renew as written" \
   --answer "Two sentences in plain words, with the number and its unit." \
   --confidence medium --source "executed-lease.pdf p.4 sec 12.1"
@@ -201,8 +236,8 @@ hypothesis, which is the honest label for it.
 ## 7. Finish
 
 ```bash
-python3 "$SPRINT" check RUNDIR       # must print ok
-python3 "$SPRINT" findings RUNDIR    # durable FINDINGS.md from the same state
+python3 "$SPRINT" check "$RUN"       # must print ok
+python3 "$SPRINT" findings "$RUN"    # durable FINDINGS.md from the same state
 ```
 
 File every confirmation step where the user tracks work, one task per row, with

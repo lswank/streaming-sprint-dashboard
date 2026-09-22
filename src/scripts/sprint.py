@@ -70,10 +70,14 @@ class Run:
     # becomes a path, so validating here covers every command at once. Without it
     # an agent called "../../x" writes outside the run directory.
     def agent_path(self, name: str) -> Path:
-        return self.state / f"{check_agent_name(name)}.json"
+        return schema.no_symlink(self.state / f"{check_agent_name(name)}.json", self.root)
 
     def log_path(self, name: str) -> Path:
-        return self.state / f"{check_agent_name(name)}.log"
+        return schema.no_symlink(self.state / f"{check_agent_name(name)}.log", self.root)
+
+    def internal_path(self, name: str) -> Path:
+        """_answers.json and _feedback.jsonl, guarded the same way."""
+        return schema.no_symlink(self.state / name, self.root)
 
     def agent_names(self) -> list[str]:
         """Roster order first, then any extra state file, so a stray agent still shows."""
@@ -111,8 +115,10 @@ class Run:
 
     def read_logs(self) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
+        if self.state.is_symlink():
+            return out
         for p in sorted(self.state.glob("*.log")):
-            if not p.is_file():
+            if not p.is_file() or p.is_symlink():
                 continue
             try:
                 fh = p.open("rb")
@@ -122,13 +128,20 @@ class Run:
                 size = p.stat().st_size
                 if size > self.LOG_TAIL_BYTES:
                     fh.seek(size - self.LOG_TAIL_BYTES)
-                    fh.readline()          # drop the half line the seek landed in
-                text = fh.read().decode(errors="replace")
+                    head = fh.readline()   # the half line the seek landed in
+                    text = fh.read().decode(errors="replace")
+                    # WHY the fallback: one line longer than the whole window used
+                    # to swallow the tail and the card showed nothing at all.
+                    if not text:
+                        text = "(one very long line, truncated) " + \
+                               head.decode(errors="replace")[-self.LOG_TAIL_BYTES:]
+                else:
+                    text = fh.read().decode(errors="replace")
             out[p.stem] = text.splitlines()
         return out
 
     def answers(self) -> dict[str, Answer]:
-        path = self.state / "_answers.json"
+        path = self.internal_path("_answers.json")
         if not path.exists():
             return {}
         try:
@@ -149,14 +162,14 @@ class Run:
     def write_answer(self, a: Answer) -> None:
         current = {k: schema.to_dict(v) for k, v in self.answers().items()}
         current[a.question_id] = schema.to_dict(a)
-        path = self.state / "_answers.json"
+        path = self.internal_path("_answers.json")
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(current, indent=2) + "\n")
         tmp.replace(path)
 
     def feedback(self) -> dict[str, dict]:
         """Last reply per question id wins: the user is allowed to change their mind."""
-        path = self.state / "_feedback.jsonl"
+        path = self.internal_path("_feedback.jsonl")
         out: dict[str, dict] = {}
         if not path.exists():
             return out
@@ -174,7 +187,7 @@ class Run:
 
     def append_feedback(self, row: dict) -> None:
         self.state.mkdir(parents=True, exist_ok=True)
-        with (self.state / "_feedback.jsonl").open("a") as fh:
+        with self.internal_path("_feedback.jsonl").open("a") as fh:
             fh.write(json.dumps(row) + "\n")
 
     def snapshot(self) -> tuple[Manifest, list[AgentState], dict[str, Answer], dict[str, dict], dict[str, list[str]]]:
@@ -203,15 +216,29 @@ def cmd_init(args: argparse.Namespace) -> int:
             check_agent_name(name)
         except ValidationError as exc:
             raise SystemExit(f"--agent {spec!r}: {exc}")
+        clash = next((r.name for r in roster if r.name.lower() == name.lower()), None)
+        if clash:
+            raise SystemExit(f"--agent {spec!r}: {clash!r} is already on the roster. Two "
+                             f"entries would share one state file, so one would be lost.")
         roster.append(RosterEntry(name=name, remit=remit.strip(), model=args.model))
     questions = [Question(id=f"q{i}", text=t) for i, t in enumerate(args.question, start=1)]
     m = Manifest(title=args.title, questions=questions, roster=roster, created=now())
+    _retire_stale_answers(run, questions)
+    if run.state.is_symlink() or run.root.is_symlink():
+        raise SystemExit(f"{run.root} contains a symbolic link where a directory belongs; "
+                         f"a run directory must hold only real files")
     run.state.mkdir(parents=True, exist_ok=True)
-    schema.write_json(run.manifest_path, m)
+    schema.write_json(schema.no_symlink(run.manifest_path, run.root), m)
     for entry in roster:
         if not run.agent_path(entry.name).exists():
             run.write_agent(AgentState(name=entry.name, remit=entry.remit))
     _copy_template("SCHEMA.md", run.root / "SCHEMA.md")
+    if (run.root / "CONTEXT.md").exists():
+        stale = [q.text for q in questions
+                 if q.text not in (run.root / "CONTEXT.md").read_text()]
+        if stale:
+            print("  CONTEXT.md does not mention: " + "; ".join(stale))
+            print("  Update it before launching anyone: every agent reads it first.")
     _write_context(run, m)
     print(f"initialised {run.root}")
     print(f"  {len(roster)} agents; answer these ids with `sprint.py answer`:")
@@ -220,6 +247,34 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"  contract: {run.root / 'SCHEMA.md'}  shared facts: {run.root / 'CONTEXT.md'}")
     print(f"  next: python3 {Path(__file__).name} serve {run.root}")
     return 0
+
+
+def _retire_stale_answers(run: Run, questions: list[Question]) -> None:
+    """On a re-init, move answers aside when their question changed underneath them.
+
+    WHY: ids are positional (q1, q2). Re-initialising with a different question
+    set otherwise leaves q1's old verdict sitting under a new q1.
+    """
+    path = run.state / "_answers.json"
+    if not path.exists():
+        return
+    try:
+        previous = json.loads(path.read_text())
+        old_ids = {q.id for q in run.manifest().questions} if run.manifest_path.exists() else set()
+        old_text = {q.id: q.text for q in run.manifest().questions} if run.manifest_path.exists() else {}
+    except (json.JSONDecodeError, OSError, ValidationError):
+        return
+    new_text = {q.id: q.text for q in questions}
+    changed = [i for i in previous if new_text.get(i) != old_text.get(i)]
+    if not changed:
+        return
+    aside = run.state / f"_answers.retired-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    aside.write_text(json.dumps(previous, indent=2) + "\n")
+    kept = {i: v for i, v in previous.items() if i not in changed}
+    path.write_text(json.dumps(kept, indent=2) + "\n")
+    print(f"  moved {len(changed)} answer(s) to {aside.name}: their question changed "
+          f"({', '.join(sorted(changed))})")
+    _ = old_ids
 
 
 def _copy_template(name: str, dest: Path) -> None:
@@ -292,11 +347,16 @@ def cmd_log(args: argparse.Namespace) -> int:
         fh.write(f"{stamp} {line}\n")
     # WHY: the first log line means the agent has started. Flipping the status here
     # keeps the card honest without asking the agent to remember two calls.
-    with schema.locked(run.agent_path(args.agent)):
-        st = run.read_agent(args.agent)
-        if st.status == "queued":
-            st.status = "running"
-            run.write_agent(st)
+    try:
+        with schema.locked(run.agent_path(args.agent)):
+            st = run.read_agent(args.agent)
+            if st.status == "queued":
+                st.status = "running"
+                run.write_agent(st)
+    except ValidationError as exc:
+        print(f"the log line was appended, but {args.agent}.json is not usable: {exc}\n"
+              f"Fix that file before reporting anything else.", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -340,15 +400,18 @@ def _add_locked(run: Run, args: argparse.Namespace) -> int:
         st.evidence.append(Evidence(claim=args.claim, source=args.source, date=args.date,
                                     quote=args.quote or "", verified_by=args.verified_by or ""))
     elif args.kind == "ask":
+        # WHY clean first: the stored text is cleaned, so an id taken from the raw
+        # argument would never match the card, and the dedupe below would miss.
+        question = schema.clean_text(args.question)
         # WHY idempotent: agents retry, and a duplicated question would render twice
         # and collect two answers under one id.
         existing = {qid(st.name, h.question) for h in st.human_input}
-        if qid(st.name, args.question) in existing:
-            print(f"already asked: {qid(st.name, args.question)}")
+        if qid(st.name, question) in existing:
+            print(f"already asked: {qid(st.name, question)}")
             return 0
-        st.human_input.append(HumanInput(question=args.question, options=args.option or [],
+        st.human_input.append(HumanInput(question=question, options=args.option or [],
                                          why=args.why or "", if_unanswered=args.if_unanswered or ""))
-        print(qid(st.name, args.question))
+        print(qid(st.name, question))
     run.write_agent(st)
     return 0
 
@@ -423,6 +486,13 @@ def cmd_check(args: argparse.Namespace) -> int:
         for d in st.defaults:
             if len(d.cost_if_wrong.split()) < 3:
                 problems.append(f"{name}.json: default {d.decision!r} has no real cost_if_wrong")
+    if not args.agent:
+        if not m.roster:
+            problems.append("manifest.json: the roster is empty, so nothing can report")
+        context = run.root / "CONTEXT.md"
+        if context.exists() and "paste the exact words" in context.read_text():
+            problems.append("CONTEXT.md still holds the placeholder for the request; "
+                            "replace it with the triggering request, word for word")
     answers: dict[str, Answer] = {}
     known = {q.id for q in m.questions}
     if args.agent:
@@ -482,7 +552,9 @@ def cmd_findings(args: argparse.Namespace) -> int:
     if feedback:
         lines += ["## Answered by the human", ""]
         for row in feedback.values():
-            lines.append(f"- {row.get('question','')} -> **{row.get('answer','')}** ({row.get('at','')})")
+            # A code span keeps a typed answer from becoming markdown or live HTML.
+            lines.append(f"- {_cell(row.get('question',''))} -> "
+                         f"`{_code(row.get('answer',''))}` ({row.get('at','')})")
         lines.append("")
     rows = [(s.name, d) for s in states for d in s.defaults]
     if rows:
@@ -512,6 +584,12 @@ def cmd_findings(args: argparse.Namespace) -> int:
     return 0
 
 
+def _code(text: str) -> str:
+    """Make text safe inside a markdown code span: one line, no backticks, and no
+    run of whitespace left over from the newlines that were collapsed."""
+    return " ".join(text.replace("`", "'").split())
+
+
 def _cell(text: str) -> str:
     """Keep a pipe inside a cell from splitting the table."""
     return text.replace("|", "\\|").replace("\n", " ").strip()
@@ -531,6 +609,19 @@ def cmd_demo(args: argparse.Namespace) -> int:
                "exit-cost:moving, downtime and restoration", "signoff:who approves what",
                "coordinator:what the coordinator verified first hand"])
     cmd_init(init)
+    # WHY the reset: demo is meant to be run repeatedly to look at the page, and
+    # appending to the previous run doubled every row.
+    for stale in list(run.state.glob("*.json")) + list(run.state.glob("*.log")):
+        if not stale.name.startswith("_"):
+            stale.unlink()
+    for agent in [r.name for r in run.manifest().roster]:
+        run.write_agent(AgentState(name=agent, remit=next(
+            (r.remit for r in run.manifest().roster if r.name == agent), "")))
+    context = root / "CONTEXT.md"
+    context.write_text(context.read_text().replace(
+        "> (paste the exact words that triggered this sprint)",
+        "> The warehouse lease is up. Do we renew it, renegotiate it, or leave? I need\n"
+        "> the exit number and who signs off before the board meets."))
     steps = {
         "lease-terms": ["opened the executed lease", "found the renewal window clause",
                         "cross-checked the escalator against schedule B"],
@@ -662,6 +753,11 @@ def make_handler(run: Run):
             except ValueError:
                 self._send(400, b"bad request: Content-Length is not a number", "text/plain")
                 return
+            if length < 0:
+                # WHY: rfile.read(-1) reads to EOF, which walked straight past the
+                # size limit below.
+                self._send(400, b"bad request: Content-Length is negative", "text/plain")
+                return
             if length > 64_000:  # WHY: a typed answer is never this long
                 self._send(413, b"too large", "text/plain")
                 return
@@ -675,7 +771,7 @@ def make_handler(run: Run):
                 # WHY the id and agent are pattern-checked: they are keys, and the
                 # page only ever sends ids this tool generated.
                 ident = str(row.get("id") or "")
-                if not re.fullmatch(r"[0-9a-f]{0,32}", ident):
+                if not re.fullmatch(r"[0-9a-f]{4,32}", ident):
                     raise ValueError("id is not a question id")
                 agent = str(row.get("agent") or "")
                 if agent and not schema.AGENT_NAME_RE.match(agent):
