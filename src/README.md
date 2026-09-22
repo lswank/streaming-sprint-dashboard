@@ -129,6 +129,22 @@ dashboard.html           only written by `build`; `serve` renders on each poll
 Nothing in the run directory is hand-edited, including by you. `sprint.py check`
 is what says whether it is valid.
 
+## What has been exercised
+
+- The grok variant ran for real: three live agents against this package itself,
+  one question each, logging as they went, finishing through `check` and
+  `set --status done`. The coordinator's answers and `FINDINGS.md` came out of
+  that run.
+- The page was clicked in a real browser: an option button and a typed answer
+  both reached `state/_feedback.jsonl`, and the header count dropped without a
+  reload.
+- The Codex variant's launch line is written from `codex exec --help` and has
+  not been run end to end. The flags are real; the fan-out is untested. Treat
+  that block as the one part of the package to check on first use.
+- The layout was measured, not eyeballed: at a 390 pixel viewport nothing
+  overflows, and every text colour pair in both palettes is at or above the
+  WCAG AA ratio of 4.5 to 1 (the tightest is 4.82 to 1).
+
 ## License
 
 MIT. See LICENSE.
