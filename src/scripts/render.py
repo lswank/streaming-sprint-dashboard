@@ -52,7 +52,8 @@ def answers_region(manifest: Manifest, answers: dict[str, Answer]) -> str:
             out.append(
                 f'<article class="ans pending"><div class="qtext">{e(q.text)}</div>'
                 f'<div class="chiprow"><span class="chip waiting">not answered yet</span></div>'
-                f'<div class="skel"><span></span><span></span></div></article>'
+                f'<p class="pendingnote">The coordinator writes this once the agents '
+                f'that own it have reported.</p></article>'
             )
             continue
         sources = "".join(
@@ -156,6 +157,9 @@ def agents_region(states: Iterable[AgentState], logs: dict[str, list[str]]) -> s
             f'<article class="card s-{e(st.status)}">'
             f'<header><h3>{e(st.name)}</h3>'
             f'<span class="dot"></span><span class="status">{e(STATUS_LABEL.get(st.status, st.status))}</span></header>'
+            # WHY the write time is an attribute and not text: the stamp is UTC
+            # and the reader is not, so the page words it in local terms.
+            + (f'<span class="ago" data-at="{e(st.updated_at)}"></span>' if st.updated_at else "")
             + (f'<p class="remit">{e(st.remit)}</p>' if st.remit else "")
             + (f'<p class="summary">{e(st.summary)}</p>' if st.summary else
                '<p class="summary quiet">no summary yet</p>')
@@ -283,13 +287,13 @@ def page(manifest: Manifest, states: list[AgentState], answers: dict[str, Answer
 </header>
 {live_note}
 <main>
-  <section class="block">
-    <h2>Answers</h2>
-    <div id="region-answers" class="region">{r["answers"]}</div>
-  </section>
   <section class="block need" id="needblock">
     <h2>Needs a human answer</h2>
     <div id="region-questions" class="region">{r["questions"]}</div>
+  </section>
+  <section class="block">
+    <h2>Answers</h2>
+    <div id="region-answers" class="region">{r["answers"]}</div>
   </section>
   <section class="block">
     <h2>Agents</h2>
@@ -351,6 +355,23 @@ function answerFree(input) {{
   post(input.closest('.q'), v);
 }}
 
+function ago(iso) {{
+  const then = Date.parse(iso);
+  if (!then) return '';
+  const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+  if (secs < 45) return 'wrote just now';
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `wrote ${{mins}} min ago`;
+  const hours = Math.floor(mins / 60);
+  return `wrote ${{hours}}h ${{mins % 60}}m ago`;
+}}
+
+function paintTimes() {{
+  document.querySelectorAll('.ago[data-at]').forEach(el => {{
+    el.textContent = ago(el.dataset.at);
+  }});
+}}
+
 async function tick() {{
   if (!LIVE) return;
   try {{
@@ -365,12 +386,15 @@ async function tick() {{
       if (!el) continue;
       hashes[name] = h;
       el.innerHTML = s.regions[name];
+      paintTimes();
     }}
     document.getElementById('pulse').classList.remove('stale');
   }} catch (err) {{
     document.getElementById('pulse').classList.add('stale');
   }}
 }}
+paintTimes();
+setInterval(paintTimes, 30000);   // the wording ages even when nothing else changes
 if (LIVE) setInterval(tick, 3000);
 </script>
 </body></html>
@@ -461,6 +485,9 @@ button:hover { border-color: var(--accent); color: var(--accent); }
 .card.s-done .dot { background: var(--ok); }
 .card.s-blocked .dot { background: var(--warn); }
 .card .status { font-size: 11px; color: var(--dim); }
+.ago { font-size: 11px; color: var(--dim); display: block; margin-top: 5px; }
+.ago:empty { display: none; }
+.pendingnote { font-size: 13px; color: var(--dim); margin: 0; }
 .remit { font-size: 12px; color: var(--dim); margin: 6px 0 0; }
 .summary { font-size: 13px; margin: 8px 0 0; }
 .counts { display: flex; gap: 10px; font-size: 11px; color: var(--dim); margin: 9px 0 8px; }

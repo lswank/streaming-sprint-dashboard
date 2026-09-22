@@ -111,7 +111,7 @@ verified facts there while you work, and one of them may settle something you
 reported as unknown.
 
 ```
-sprint.py check <RUN>                       # must print ok; fix what it names
+sprint.py check <RUN> --agent <AGENT>       # your file only; must print ok
 sprint.py replies <RUN>                     # did your question get answered?
 sprint.py set <RUN> <AGENT> --status done \
   --summary "Two sentences answering your question, with the number and its unit."

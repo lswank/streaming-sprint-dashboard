@@ -242,6 +242,31 @@ class TestHeaderCounts(unittest.TestCase):
         self.assertIn("2 agents<", render.pills_region([AgentState(name="m"), AgentState(name="n")], {}))
 
 
+class TestHierarchy(unittest.TestCase):
+    """What needs a human comes before finished output, or it lands below the fold."""
+
+    def test_the_human_panel_is_the_first_block(self):
+        html = render.page(manifest(), [], {}, {}, {}, live=True)
+        self.assertLess(html.index("Needs a human answer"), html.index(">Answers<"))
+
+    def test_an_unanswered_question_is_not_a_shimmer(self):
+        html = render.answers_region(manifest(), {})
+        self.assertIn("not answered yet", html)
+        self.assertIn("pendingnote", html)
+        self.assertNotIn('class="skel"', html)
+
+    def test_a_card_carries_its_write_time_for_the_page_to_word(self):
+        st = AgentState(name="m", status="running", summary="s",
+                        updated_at="2026-09-22T08:00:00+00:00")
+        html = render.agents_region([st], {})
+        self.assertIn('data-at="2026-09-22T08:00:00+00:00"', html)
+
+    def test_the_page_words_the_write_time_in_local_terms(self):
+        html = render.page(manifest(), [], {}, {}, {}, live=True)
+        self.assertIn("function ago(iso)", html)
+        self.assertIn("setInterval(paintTimes", html)
+
+
 class TestPage(unittest.TestCase):
     def test_static_build_says_answers_cannot_be_captured(self):
         html = render.page(manifest(), [], {}, {}, {}, live=False)

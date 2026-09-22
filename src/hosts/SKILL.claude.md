@@ -110,7 +110,9 @@ Give the legwork to cheaper models and keep the verification for this session.
 
 ## 4. Launch
 
-One message, one `Agent` call per roster entry, all in parallel. Each prompt:
+One message, one `Agent` call per roster entry **except `coordinator`**, all in
+parallel. The coordinator is this session: never spawn a subagent for it.
+Each prompt:
 
 ```
 You are the `exit-cost` agent on sprint /work/lease-2026/sprint.
@@ -126,7 +128,7 @@ signoff; another agent owns each of those.
 Log every step as it happens. Do not batch your log at the end.
 
 Finish with these three, in this order:
-  python3 /path/to/skill/scripts/sprint.py check /work/lease-2026/sprint
+  python3 /path/to/skill/scripts/sprint.py check /work/lease-2026/sprint --agent exit-cost
   python3 /path/to/skill/scripts/sprint.py replies /work/lease-2026/sprint
   python3 /path/to/skill/scripts/sprint.py set /work/lease-2026/sprint exit-cost \
     --status done --summary "<two sentences, with the number and its unit>"
@@ -140,7 +142,8 @@ its answer; a new question gets a new roster entry.
 
 ## 5. While they run, verify
 
-The coordinator is not a sixth researcher.
+The `coordinator` roster entry is this session, not an agent to launch. It is not
+another researcher either: its job is to check what the others report.
 
 - Independently check any high-stakes claim before relaying it: money,
   counterparties, contracts, anything that will be quoted to someone else. Open

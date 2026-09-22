@@ -127,13 +127,13 @@ signoff; another agent owns each of those.
 Log every step as it happens. Do not batch the log at the end.
 
 Finish with these three, in this order:
-  python3 $SPRINT check RUNDIR
+  python3 $SPRINT check RUNDIR --agent exit-cost
   python3 $SPRINT replies RUNDIR
   python3 $SPRINT set RUNDIR exit-cost --status done --summary "<two sentences>"
 PROMPT
 
 MODEL=<a cheaper model for the legwork>
-for a in lease-terms exit-cost signoff; do
+for a in lease-terms exit-cost signoff; do    # the roster minus coordinator
   nohup codex exec --skip-git-repo-check --sandbox workspace-write \
     -C RUNDIR -m "$MODEL" --output-last-message "RUNDIR/state/$a.final" \
     "$(cat "RUNDIR/prompts/$a.md")" > "RUNDIR/state/$a.stdout" 2>&1 &
@@ -148,8 +148,8 @@ heredoc is unquoted on purpose, so `$SPRINT` and `RUNDIR` are substituted as the
 file is written and the agent reads absolute paths rather than placeholders.
 
 Every launched process gets its own stdout file: when a card stays queued, that
-file says why, and `python3 "$SPRINT" check RUNDIR` says whether what it wrote
-is valid.
+file says why, and `python3 "$SPRINT" check RUNDIR --agent <name>` says whether
+what it wrote is valid.
 
 Watch the page rather than the processes. `wait` blocks until the whole fan-out
 is done, which is exactly what the dashboard exists to avoid.
@@ -159,7 +159,8 @@ its answer; a new question gets a new roster entry and its own process.
 
 ## 5. While they run, verify
 
-The coordinator is not a sixth researcher.
+The `coordinator` roster entry is this session, not an agent to launch. It is not
+another researcher either: its job is to check what the others report.
 
 - Independently check any high-stakes claim before relaying it: money,
   counterparties, contracts, anything that will be quoted to someone else. Open

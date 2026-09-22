@@ -214,7 +214,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     _copy_template("SCHEMA.md", run.root / "SCHEMA.md")
     _write_context(run, m)
     print(f"initialised {run.root}")
-    print(f"  {len(roster)} agents, {len(questions)} questions")
+    print(f"  {len(roster)} agents; answer these ids with `sprint.py answer`:")
+    for q in questions:
+        print(f"    {q.id}  {q.text}")
     print(f"  contract: {run.root / 'SCHEMA.md'}  shared facts: {run.root / 'CONTEXT.md'}")
     print(f"  next: python3 {Path(__file__).name} serve {run.root}")
     return 0
@@ -381,7 +383,11 @@ def cmd_replies(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    """Validate every file. This is what makes the contract real."""
+    """Validate every file. This is what makes the contract real.
+
+    --agent narrows it to one agent's file, so an agent checking itself mid-flight
+    does not read its peers' half-finished work as its own problem.
+    """
     run = Run(Path(args.dir).resolve())
     run.require()
     problems: list[str] = []
@@ -391,7 +397,13 @@ def cmd_check(args: argparse.Namespace) -> int:
         print("\n".join(f"error  {p}" for p in exc.problems))
         return 1
     rostered = {r.name for r in m.roster}
-    for name in run.agent_names():
+    names = run.agent_names()
+    if args.agent:
+        check_agent_name(args.agent)
+        if args.agent not in names:
+            raise SystemExit(f"{args.agent!r} has no state in this run (have: {', '.join(names)})")
+        names = [args.agent]
+    for name in names:
         try:
             st = run.read_agent(name)
         except ValidationError as exc:
@@ -411,12 +423,20 @@ def cmd_check(args: argparse.Namespace) -> int:
         for d in st.defaults:
             if len(d.cost_if_wrong.split()) < 3:
                 problems.append(f"{name}.json: default {d.decision!r} has no real cost_if_wrong")
+    answers: dict[str, Answer] = {}
+    known = {q.id for q in m.questions}
+    if args.agent:
+        # One agent's check stops here: the answers file is the coordinator's.
+        for p in problems:
+            print(f"error  {p}")
+        if not problems:
+            print(f"ok  {args.agent}")
+        return 1 if problems else 0
     try:
         answers = run.answers()
     except ValidationError as exc:
         problems += [f"_answers.json: {p}" for p in exc.problems]
         answers = {}
-    known = {q.id for q in m.questions}
     for k, a in answers.items():
         if k not in known:
             problems.append(f"_answers.json: {k!r} is not a question in the manifest")
@@ -425,7 +445,9 @@ def cmd_check(args: argparse.Namespace) -> int:
     for p in problems:
         print(f"error  {p}")
     if not problems:
-        print(f"ok  {len(run.agent_names())} agents, {len(answers)}/{len(known)} questions answered")
+        unanswered = [q.id for q in m.questions if q.id not in answers]
+        tail = f"; still to answer: {', '.join(unanswered)}" if unanswered else ""
+        print(f"ok  {len(names)} agents, {len(answers)}/{len(known)} questions answered{tail}")
     return 1 if problems else 0
 
 
@@ -521,6 +543,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     for agent, lines in steps.items():
         for line in lines:
             cmd_log(argparse.Namespace(dir=str(root), agent=agent, line=line))
+    _backdate_demo_logs(run, steps)
     run.write_agent(_demo_state(run, "lease-terms", "done",
         "Renewal window opens 90 days out and closes 30 days out. Escalator is 3.5% fixed, not CPI."))
     st = run.read_agent("lease-terms")
@@ -572,6 +595,20 @@ def cmd_demo(args: argparse.Namespace) -> int:
         confidence="high", source=["board-charter.pdf sec 4"]))
     print(f"demo run ready: {root}")
     return 0
+
+
+def _backdate_demo_logs(run: Run, steps: dict[str, list[str]]) -> None:
+    """Rewrite the demo's stamps so each line is a few minutes apart, as a real
+    run would be. Without this every card shows the same second."""
+    from datetime import timedelta
+    now_local = datetime.now()
+    for agent, lines in steps.items():
+        path = run.log_path(agent)
+        out = []
+        for i, line in enumerate(reversed(lines)):
+            stamp = (now_local - timedelta(minutes=2 * i + 1)).strftime(LOG_STAMP)
+            out.append(f"{stamp} {line}")
+        path.write_text("\n".join(reversed(out)) + "\n")
 
 
 def _demo_state(run: Run, name: str, status: str, summary: str) -> AgentState:
@@ -773,6 +810,7 @@ def parser() -> argparse.ArgumentParser:
 
     c = sub.add_parser("check", help="validate every file against the contract")
     c.add_argument("dir")
+    c.add_argument("--agent", help="check only this agent's own file")
     c.set_defaults(fn=cmd_check)
 
     f = sub.add_parser("findings", help="write FINDINGS.md from the same state")

@@ -19,17 +19,18 @@ from schema import AgentState, qid
 
 
 LAST_OUT = ""
+LAST_ERR = ""
 
 
 def run(*argv) -> int:
-    """Call the CLI in-process, keeping its stdout out of the test report."""
-    global LAST_OUT
-    buf = io.StringIO()
+    """Call the CLI in-process, keeping its output out of the test report."""
+    global LAST_OUT, LAST_ERR
+    out, err = io.StringIO(), io.StringIO()
     try:
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             return sprint.main([str(a) for a in argv])
     finally:
-        LAST_OUT = buf.getvalue()
+        LAST_OUT, LAST_ERR = out.getvalue(), err.getvalue()
 
 
 class Base(unittest.TestCase):
@@ -279,6 +280,28 @@ class TestAnswersAndChecks(Base):
         self.assertEqual((a.verdict, a.answer, a.confidence), ("Renegotiate", "second", "high"))
         self.assertEqual(len(self.run_obj.answers()), 1)
 
+    def test_init_prints_the_question_ids_to_answer(self):
+        import tests.test_sprint as mod  # the CLI's stdout was captured by run()
+        self.assertIn("q1  Renew or leave?", mod.LAST_OUT)
+
+    def test_check_can_be_scoped_to_one_agent(self):
+        run("log", self.dir, "exit-cost", "a line")
+        (self.dir / "state/market.json").write_text('{"name": "market", "status": "winning"}')
+        self.assertEqual(run("check", self.dir, "--agent", "exit-cost"), 0)
+        self.assertEqual(run("check", self.dir, "--agent", "market"), 1)
+        self.assertEqual(run("check", self.dir), 1)
+
+    def test_a_scoped_check_on_an_unknown_agent_says_who_exists(self):
+        with self.assertRaises(SystemExit) as cm:
+            run("check", self.dir, "--agent", "nobody")
+        self.assertIn("market", str(cm.exception))
+
+    def test_check_names_the_questions_still_to_answer(self):
+        run("answer", self.dir, "q1", "--verdict", "v", "--answer", "a")
+        run("check", self.dir)
+        import tests.test_sprint as mod
+        self.assertIn("still to answer: q2", mod.LAST_OUT)
+
     def test_check_passes_on_a_fresh_run(self):
         self.assertEqual(run("check", self.dir), 0)
 
@@ -377,11 +400,8 @@ class TestBrokenFiles(Base):
 
     def test_build_warns_about_a_rejected_state_file(self):
         (self.dir / "state/market.json").write_text("{oops")
-        import contextlib, io
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertEqual(run("build", self.dir), 0)
-        self.assertIn("market.json was rejected", err.getvalue())
+        self.assertEqual(run("build", self.dir), 0)
+        self.assertIn("market.json was rejected", LAST_ERR)
 
     def test_a_corrupt_answers_file_is_named_by_check(self):
         (self.dir / "state/_answers.json").write_text("{not json")
@@ -411,6 +431,7 @@ class TestServer(Base):
         super().setUp()
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), sprint.make_handler(self.run_obj))
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
 
@@ -458,30 +479,21 @@ class TestServer(Base):
         self.assertEqual(json.loads(self.get("/state.json")[1])["counts"]["waiting"], 0)
 
     def test_an_empty_answer_is_refused(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post("/answer", {"id": "x", "answer": ""})
-        self.assertEqual(cm.exception.code, 400)
+        self.refused(400, payload={"id": "x", "answer": ""})
 
     def test_malformed_json_is_refused(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post("/answer", None, raw=b"{not json")
-        self.assertEqual(cm.exception.code, 400)
+        self.refused(400, raw=b"{not json")
 
     def test_an_oversized_body_is_refused(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post("/answer", {"id": "x", "answer": "y" * 70000})
-        self.assertEqual(cm.exception.code, 413)
+        self.refused(413, payload={"id": "x", "answer": "y" * 70000})
 
     def test_nothing_else_is_served(self):
         for path in ("/manifest.json", "/state/market.json", "/../manifest.json", "/index.html"):
-            with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as cm:
-                self.get(path)
-            self.assertEqual(cm.exception.code, 404)
+            with self.subTest(path=path):
+                self.refused(404, path=path, method="get")
 
     def test_posting_anywhere_else_is_refused(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post("/state.json", {"answer": "x"})
-        self.assertEqual(cm.exception.code, 404)
+        self.refused(404, path="/state.json", payload={"answer": "x"})
 
     def test_a_broken_state_file_keeps_the_server_up(self):
         (self.dir / "state/market.json").write_text("{oops")
@@ -492,20 +504,23 @@ class TestServer(Base):
         self.post("/answer", {"id": "abcdef0123", "answer": "z" * 4100})
         self.assertEqual(len(self.run_obj.feedback()["abcdef0123"]["answer"]), 4000)
 
-    def test_a_non_string_answer_is_refused(self):
+    def refused(self, code, path="/answer", payload=None, raw=None, method="post"):
         with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post("/answer", {"id": "abcdef0123", "answer": {"x": 1}})
-        self.assertEqual(cm.exception.code, 400)
+            if method == "post":
+                self.post(path, payload, raw=raw)
+            else:
+                self.get(path)
+        self.addCleanup(cm.exception.close)
+        self.assertEqual(cm.exception.code, code)
+
+    def test_a_non_string_answer_is_refused(self):
+        self.refused(400, payload={"id": "abcdef0123", "answer": {"x": 1}})
 
     def test_an_id_that_is_not_a_question_id_is_refused(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post("/answer", {"id": "../../etc/passwd", "answer": "yes"})
-        self.assertEqual(cm.exception.code, 400)
+        self.refused(400, payload={"id": "../../etc/passwd", "answer": "yes"})
 
     def test_an_agent_field_that_is_not_an_agent_name_is_refused(self):
-        with self.assertRaises(urllib.error.HTTPError) as cm:
-            self.post("/answer", {"id": "abcdef0123", "agent": "../x", "answer": "yes"})
-        self.assertEqual(cm.exception.code, 400)
+        self.refused(400, payload={"id": "abcdef0123", "agent": "../x", "answer": "yes"})
 
     def test_control_characters_in_an_answer_are_stripped(self):
         self.post("/answer", {"id": "abcdef0124", "answer": "yes\u0000\u202eno"})
