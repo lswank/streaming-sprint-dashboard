@@ -93,11 +93,27 @@ command prints the question's id and is safe to run twice with the same text.
 Then keep working. You never block on an answer; `--if-unanswered` is what
 happens if none arrives, and you proceed on it.
 
+Check once more before you finish, because the answer often lands while you work:
+
+```
+sprint.py replies <RUN>
+```
+
+If your question was answered, use the answer and say so in your summary.
+
 ## Before you finish
 
+Re-read the "Already settled" table in `CONTEXT.md`: the coordinator adds
+verified facts there while you work, and one of them may settle something you
+reported as unknown.
+
 ```
-sprint.py check <RUN>      # must print ok; fix what it names
+sprint.py check <RUN>                       # must print ok; fix what it names
+sprint.py replies <RUN>                     # did your question get answered?
+sprint.py set <RUN> <AGENT> --status done \
+  --summary "Two sentences answering your question, with the number and its unit."
 ```
 
-Then set `--status done` with a summary that answers your question in two
-sentences, in plain words, with the number and its unit.
+`--status done` is refused without a summary, so write the summary first. If you
+cannot answer your question, finish as `blocked` and say in the summary what
+would unblock it.

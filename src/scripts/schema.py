@@ -12,8 +12,12 @@ Read this file to learn the agent contract; run `sprint.py check` to enforce it.
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
+import os
+import re
+from contextlib import contextmanager
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,6 +50,21 @@ class ValidationError(ValueError):
     def __init__(self, problems: list[str]) -> None:
         super().__init__("; ".join(problems))
         self.problems = problems
+
+
+# WHY a name pattern: the agent name becomes a filename. Without this, an agent
+# called "../../x" writes outside the run directory, and one called "/tmp/x"
+# writes anywhere at all.
+AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def check_agent_name(name: str) -> str:
+    """Return the name, or raise. Called on every path that turns a name into a file."""
+    if not AGENT_NAME_RE.match(name or ""):
+        raise ValidationError([
+            f"agent name {name!r} is not usable as a filename: use 1 to 64 characters of "
+            f"letters, digits, dot, underscore or hyphen, starting with a letter or digit"])
+    return name
 
 
 # --- the pieces an agent reports ------------------------------------------------
@@ -203,11 +222,23 @@ def _build(cls: type, data: Any, where: str, problems: list[str]) -> Any:
     for name in REQUIRED_NONEMPTY.get(cls, ()):
         if not str(getattr(obj, name, "") or "").strip():
             problems.append(f"{where}.{name} is required and must not be empty")
+    if cls in (AgentState, RosterEntry) and not AGENT_NAME_RE.match(getattr(obj, "name", "") or ""):
+        problems.append(f"{where}.name {obj.name!r} is not usable as a filename")
     if cls is AgentState and obj.status not in STATUSES:
         problems.append(f"{where}.status is {obj.status!r}; use one of {', '.join(STATUSES)}")
     if cls is Answer and obj.confidence not in CONFIDENCES:
         problems.append(f"{where}.confidence is {obj.confidence!r}; use one of {', '.join(CONFIDENCES)}")
     return obj
+
+
+CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+BIDI_OVERRIDES = re.compile(r"[\u202a-\u202e\u2066-\u2069]")
+
+
+def clean_text(value: str) -> str:
+    """Strip what has no business in a report: control characters and the bidi
+    overrides that let text render in an order it was not written in."""
+    return BIDI_OVERRIDES.sub("", CONTROL_CHARS.sub("", value))
 
 
 def _coerce(tp: Any, value: Any, where: str, problems: list[str]) -> Any:
@@ -218,7 +249,7 @@ def _coerce(tp: Any, value: Any, where: str, problems: list[str]) -> Any:
         if not isinstance(value, str):
             problems.append(f"{where}: expected a string, got {type(value).__name__}")
             return None
-        return value
+        return clean_text(value)
     origin = get_origin(tp)
     if origin is list:
         (item_tp,) = get_args(tp)
@@ -231,7 +262,7 @@ def _coerce(tp: Any, value: Any, where: str, problems: list[str]) -> Any:
                 if not isinstance(item, str):
                     problems.append(f"{where}[{i}]: expected a string, got {type(item).__name__}")
                     continue
-                out.append(item)
+                out.append(clean_text(item))
             else:
                 built = _build(item_tp, item, f"{where}[{i}]", problems)
                 if built is not None:
@@ -266,17 +297,49 @@ def to_dict(obj: Any) -> Any:
 
 
 def read_json(path: Path, cls: type) -> Any:
-    """Read one state file. A parse failure names the file, so the fix is obvious."""
+    """Read one state file. Every failure becomes a ValidationError naming the file,
+    so one unreadable file never reaches the caller as a traceback."""
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         raise ValidationError([f"{path.name}: invalid JSON at line {exc.lineno} ({exc.msg})"]) from exc
+    except OSError as exc:
+        raise ValidationError([f"{path.name}: cannot be read ({exc.strerror or exc})"]) from exc
+    except UnicodeDecodeError as exc:
+        raise ValidationError([f"{path.name}: is not text ({exc.reason})"]) from exc
     return build(cls, data, path.name)
 
 
 def write_json(path: Path, obj: Any) -> None:
     """Atomic write: agents and the renderer run at the same time, so a half-written
-    state file would render as a parse error in the user's face."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(to_dict(obj), indent=2) + "\n")
-    tmp.replace(path)
+    state file would render as a parse error in the user's face.
+
+    The temp name carries the process id. Two writers sharing one temp path used
+    to race and one of them died with FileNotFoundError on replace.
+    """
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(to_dict(obj), indent=2) + "\n")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+@contextmanager
+def locked(path: Path):
+    """Hold an exclusive advisory lock for a read-modify-write on one file.
+
+    WHY: an agent usually has several tool calls in flight. Without this, two
+    `add` commands both read the file, both append one row, and the second write
+    drops the first one's row. The lock file sits beside the target so the lock
+    survives the atomic replace of the file itself.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_suffix(path.suffix + ".lock")
+    with lock.open("a+") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)

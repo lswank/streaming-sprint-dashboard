@@ -60,9 +60,10 @@ Run the tests:
 cd claude/streaming-sprint-dashboard && python3 -m unittest discover -s tests
 ```
 
-91 tests. They cover the schema, the escaping, the answer round trip, and the
-contrast ratios of both colour palettes, which are asserted as numbers rather
-than judged by eye.
+{{SKILL_TEST_COUNT}} tests. They cover the schema, the escaping, the answer round
+trip, the path traversal an agent name could otherwise open, and the contrast
+ratios of both colour palettes, which are asserted as numbers rather than judged
+by eye.
 
 ## What is in the package
 
@@ -89,7 +90,8 @@ scripts/schema.py        the state contract in typed objects, strictly validated
 scripts/render.py        the only file that produces HTML
 scripts/templates/       the agent contract copied into each run directory
 tests/                   the specification, runnable
-evals/                   five scenarios for checking the skill behaves
+evals/                   five scenario specs to run against a fresh agent
+                         (inputs for a human or an eval harness, not unit tests)
 ```
 
 ## The three rules that carry the quality
@@ -105,6 +107,10 @@ Everything else is plumbing. These are enforced by the tool, not just described:
 3. **Agents log as they go.** The log line is what streams. An agent that writes
    only when it finishes leaves a dead card on screen, which is worse than no
    dashboard.
+
+A fourth, less visible one: every write is atomic and takes the file's lock, so
+an agent with several tool calls in flight cannot lose its own rows, and the page
+never renders a half-written file.
 
 ## What the run directory holds
 

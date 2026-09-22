@@ -151,6 +151,36 @@ class TestPayload(unittest.TestCase):
         self.assertEqual(render.counts([st], {i: {"answer": "a"}})["waiting"], 0)
 
 
+class TestHeaderCounts(unittest.TestCase):
+    """The header is a live region: a stale "3 need you" is a lie on screen."""
+
+    def test_pills_are_a_polled_region(self):
+        html = render.page(manifest(), [AgentState(name="m", status="running")], {}, {}, {}, live=True)
+        self.assertIn('id="region-pills"', html)
+        self.assertIn("pills", render.state_payload(manifest(), [], {}, {}, {})["regions"])
+
+    def test_pills_keep_their_own_row_layout(self):
+        # WHY: .region carries a grid layout; applying it to the pill row stacked
+        # the pills full width. The JS finds a region by id, so the class is wrong here.
+        html = render.page(manifest(), [AgentState(name="m")], {}, {}, {}, live=True)
+        self.assertIn('<div class="pills" id="region-pills">', html)
+
+    def test_answering_changes_the_pills_hash(self):
+        st = AgentState(name="m", human_input=[HumanInput(question="q", options=["a"])])
+        before = render.state_payload(manifest(), [st], {}, {}, {})["hashes"]["pills"]
+        after = render.state_payload(manifest(), [st], {}, {qid("m", "q"): {"answer": "a"}}, {})["hashes"]["pills"]
+        self.assertNotEqual(before, after)
+
+    def test_need_you_disappears_once_answered(self):
+        st = AgentState(name="m", human_input=[HumanInput(question="q", options=["a"])])
+        self.assertIn("need you", render.pills_region([st], {}))
+        self.assertNotIn("need you", render.pills_region([st], {qid("m", "q"): {"answer": "a"}}))
+
+    def test_agent_count_is_pluralised(self):
+        self.assertIn("1 agent<", render.pills_region([AgentState(name="m")], {}))
+        self.assertIn("2 agents<", render.pills_region([AgentState(name="m"), AgentState(name="n")], {}))
+
+
 class TestPage(unittest.TestCase):
     def test_static_build_says_answers_cannot_be_captured(self):
         html = render.page(manifest(), [], {}, {}, {}, live=False)

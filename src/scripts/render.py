@@ -214,9 +214,21 @@ def counts(states: Iterable[AgentState], feedback: dict[str, dict]) -> dict[str,
     }
 
 
+def pills_region(states: Iterable[AgentState], feedback: dict[str, dict]) -> str:
+    c = counts(states, feedback)
+    return (
+        f'<span class="pill">{c["agents"]} {plural(c["agents"], "agent")}</span>'
+        f'<span class="pill run">{c["running"]} running</span>'
+        f'<span class="pill ok">{c["done"]} done</span>'
+        + (f'<span class="pill warn">{c["blocked"]} blocked</span>' if c["blocked"] else "")
+        + (f'<span class="pill need">{c["waiting"]} need you</span>' if c["waiting"] else "")
+    )
+
+
 def regions(manifest: Manifest, states: list[AgentState], answers: dict[str, Answer],
             feedback: dict[str, dict], logs: dict[str, list[str]]) -> dict[str, str]:
     return {
+        "pills": pills_region(states, feedback),
         "answers": answers_region(manifest, answers),
         "questions": questions_region(states, feedback),
         "agents": agents_region(states, logs),
@@ -237,15 +249,7 @@ def state_payload(manifest: Manifest, states: list[AgentState], answers: dict[st
 def page(manifest: Manifest, states: list[AgentState], answers: dict[str, Answer],
          feedback: dict[str, dict], logs: dict[str, list[str]], *, live: bool) -> str:
     r = regions(manifest, states, answers, feedback, logs)
-    c = counts(states, feedback)
     hashes = json.dumps({k: _hash(v) for k, v in r.items()})
-    pills = (
-        f'<span class="pill">{c["agents"]} agents</span>'
-        f'<span class="pill run">{c["running"]} running</span>'
-        f'<span class="pill ok">{c["done"]} done</span>'
-        + (f'<span class="pill warn">{c["blocked"]} blocked</span>' if c["blocked"] else "")
-        + (f'<span class="pill need">{c["waiting"]} need you</span>' if c["waiting"] else "")
-    )
     live_note = ("" if live else
                  '<div class="banner">Static build. Answers can only be captured by '
                  '<code>sprint.py serve</code>.</div>')
@@ -257,7 +261,7 @@ def page(manifest: Manifest, states: list[AgentState], answers: dict[str, Answer
 <body>
 <header class="top">
   <div class="tl"><h1>{e(manifest.title)}</h1>
-  <div class="pills">{pills}</div></div>
+  <div class="pills" id="region-pills">{r["pills"]}</div></div>
   <div class="pulse" id="pulse" title="live"><span></span>live</div>
 </header>
 {live_note}
@@ -402,6 +406,7 @@ main { padding: 16px; display: grid; gap: 22px; max-width: 1180px; margin: 0 aut
 .chiprow { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
 .chip.verdict { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+.chip.conf-high { color: var(--ok); border-color: var(--ok); }
 .chip.conf-low { color: var(--warn); border-color: var(--warn); }
 .chip.conf-medium { color: var(--need); border-color: var(--need); }
 .chip.waiting { color: var(--dim); }

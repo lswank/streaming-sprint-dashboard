@@ -102,6 +102,16 @@ class TestWrites(Base):
         run("log", self.dir, "market", "late line")
         self.assertEqual(self.run_obj.read_agent("market").status, "done")
 
+    def test_done_without_a_summary_is_refused_at_the_point_of_writing(self):
+        with self.assertRaises(SystemExit) as cm:
+            run("set", self.dir, "market", "--status", "done")
+        self.assertIn("needs a summary", str(cm.exception))
+        self.assertEqual(self.run_obj.read_agent("market").status, "queued")
+
+    def test_done_with_a_summary_already_on_file_is_allowed(self):
+        run("set", self.dir, "market", "--summary", "two sentences here")
+        self.assertEqual(run("set", self.dir, "market", "--status", "done"), 0)
+
     def test_set_rejects_an_invented_status(self):
         with self.assertRaises(SystemExit):
             run("set", self.dir, "market", "--status", "thinking")
@@ -131,6 +141,90 @@ class TestWrites(Base):
         run("add", self.dir, "exit-cost", "unknown", "--question", "c", "--why", "d")
         self.assertEqual(len(self.run_obj.read_agent("market").unknowns), 1)
         self.assertEqual(len(self.run_obj.read_agent("exit-cost").unknowns), 1)
+
+
+class TestConcurrentWriters(Base):
+    """Agents keep several tool calls in flight; no row may be lost."""
+
+    def test_parallel_adds_to_one_agent_keep_every_row(self):
+        import subprocess
+        script = str(Path(__file__).resolve().parents[1] / "scripts/sprint.py")
+        procs = [subprocess.Popen(
+            [sys.executable, script, "add", str(self.dir), "market", "unknown",
+             "--question", f"q{i}", "--why", "matters"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) for i in range(12)]
+        errors = [p.communicate()[1].decode() for p in procs]
+        self.assertEqual([e for e in errors if e.strip()], [])
+        questions = {u.question for u in self.run_obj.read_agent("market").unknowns}
+        self.assertEqual(questions, {f"q{i}" for i in range(12)})
+
+    def test_parallel_answers_do_not_corrupt_the_answers_file(self):
+        import subprocess
+        script = str(Path(__file__).resolve().parents[1] / "scripts/sprint.py")
+        procs = [subprocess.Popen(
+            [sys.executable, script, "answer", str(self.dir), qid_, "--verdict", "v",
+             "--answer", "a"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            for qid_ in ("q1", "q2", "q1", "q2", "q1", "q2")]
+        errors = [p.communicate()[1].decode() for p in procs]
+        self.assertEqual([e for e in errors if e.strip()], [])
+        self.assertEqual(set(self.run_obj.answers()), {"q1", "q2"})
+
+    def test_no_temp_or_lock_file_is_left_in_the_state_directory(self):
+        run("add", self.dir, "market", "unknown", "--question", "q", "--why", "w")
+        leftovers = [p.name for p in (self.dir / "state").iterdir() if ".tmp" in p.name]
+        self.assertEqual(leftovers, [])
+
+
+class TestFilenameIsIdentity(Base):
+    def test_the_filename_wins_over_the_name_inside(self):
+        (self.dir / "state/market.json").write_text('{"name": "not-market", "summary": "s"}')
+        self.assertEqual(self.run_obj.read_agent("market").name, "market")
+
+    def test_check_still_reports_the_disagreement(self):
+        (self.dir / "state/market.json").write_text('{"name": "not-market", "summary": "s"}')
+        self.assertEqual(run("check", self.dir), 1)
+
+    def test_findings_does_not_duplicate_a_mislabelled_agent(self):
+        run("add", self.dir, "market", "unknown", "--question", "only once", "--why", "w")
+        (self.dir / "state/market.json").write_text(
+            (self.dir / "state/market.json").read_text().replace('"market"', '"exit-cost"', 1))
+        run("findings", self.dir)
+        self.assertEqual((self.dir / "FINDINGS.md").read_text().count("only once"), 1)
+
+
+class TestAgentNames(Base):
+    """An agent name becomes a filename, so it is the one field that can escape."""
+
+    def test_a_relative_name_cannot_write_outside_the_run(self):
+        self.assertEqual(run("log", self.dir, "../../escaped", "pwned"), 1)
+        self.assertFalse((self.dir.parent.parent / "escaped.log").exists())
+
+    def test_an_absolute_name_cannot_write_anywhere(self):
+        self.assertEqual(run("set", self.dir, "/tmp/sprint-traversal-probe", "--summary", "x"), 1)
+        self.assertFalse(Path("/tmp/sprint-traversal-probe.json").exists())
+
+    def test_a_bad_roster_name_is_refused_at_init(self):
+        with self.assertRaises(SystemExit) as cm:
+            run("init", self.dir.parent / "bad", "--title", "t", "--question", "q?",
+                "--agent", "../oops")
+        self.assertIn("not usable as a filename", str(cm.exception))
+        self.assertFalse((self.dir.parent / "bad").exists())
+
+    def test_a_name_with_a_space_is_refused(self):
+        self.assertEqual(run("log", self.dir, "two words", "line"), 1)
+        self.assertFalse((self.dir / "state/two words.log").exists())
+
+    def test_a_dotfile_name_is_refused(self):
+        self.assertEqual(run("log", self.dir, ".hidden", "line"), 1)
+
+    def test_ordinary_names_still_work(self):
+        for name in ("market", "exit-cost", "agent_2", "v1.2"):
+            with self.subTest(name=name):
+                self.assertEqual(run("log", self.dir, name, "line"), 0)
+
+    def test_a_hand_written_state_file_with_a_bad_name_is_rejected_by_check(self):
+        (self.dir / "state/market.json").write_text('{"name": "../../x"}')
+        self.assertEqual(run("check", self.dir), 1)
 
 
 class TestBigLog(Base):
@@ -216,6 +310,22 @@ class TestOutputs(Base):
                          "Confirmation plan", "call counsel", "counsel"):
             self.assertIn(expected, md)
 
+    def test_findings_opens_with_a_decision_table(self):
+        run("answer", self.dir, "q1", "--verdict", "Leave", "--answer", "because",
+            "--confidence", "high")
+        run("findings", self.dir)
+        md = (self.dir / "FINDINGS.md").read_text()
+        head = md.split("## Answers")[0]
+        self.assertIn("## Decisions", head)
+        self.assertIn("| 1 | Renew or leave? | Leave | high |", head)
+        self.assertIn("| 2 | What does leaving cost? | Not answered | none |", head)
+        self.assertIn("Blocked agents: none.", head)
+
+    def test_findings_names_blocked_agents_on_the_decision_page(self):
+        run("set", self.dir, "market", "--status", "blocked", "--summary", "no access")
+        run("findings", self.dir)
+        self.assertIn("Blocked agents: market.", (self.dir / "FINDINGS.md").read_text())
+
     def test_findings_marks_an_unsourced_answer_as_a_hypothesis(self):
         run("answer", self.dir, "q1", "--verdict", "Leave", "--answer", "because")
         run("findings", self.dir)
@@ -225,6 +335,37 @@ class TestOutputs(Base):
         run("add", self.dir, "market", "unknown", "--question", "a|b", "--why", "matters")
         run("findings", self.dir)
         self.assertIn("a\\|b", (self.dir / "FINDINGS.md").read_text())
+
+
+class TestBrokenFiles(Base):
+    """One unreadable file must degrade one card, never the page or the command."""
+
+    def test_a_corrupt_answers_file_still_renders_the_page(self):
+        (self.dir / "state/_answers.json").write_text("{not json")
+        self.assertEqual(run("build", self.dir), 0)
+        self.assertIn("Renew or leave?", (self.dir / "dashboard.html").read_text())
+
+    def test_a_corrupt_answers_file_is_named_by_check(self):
+        (self.dir / "state/_answers.json").write_text("{not json")
+        self.assertEqual(run("check", self.dir), 1)
+
+    def test_an_answers_file_holding_a_list_is_rejected(self):
+        (self.dir / "state/_answers.json").write_text("[]")
+        self.assertEqual(run("check", self.dir), 1)
+
+    def test_a_log_path_that_is_a_directory_is_skipped(self):
+        (self.dir / "state/market.log").mkdir()
+        self.assertEqual(run("build", self.dir), 0)
+
+    def test_a_binary_state_file_is_reported_not_crashed(self):
+        (self.dir / "state/market.json").write_bytes(b"\xff\xfe\x00binary")
+        self.assertEqual(run("check", self.dir), 1)
+        self.assertEqual(run("build", self.dir), 0)
+
+    def test_findings_survives_a_corrupt_answers_file(self):
+        (self.dir / "state/_answers.json").write_text("{not json")
+        self.assertEqual(run("findings", self.dir), 0)
+        self.assertIn("Not answered.", (self.dir / "FINDINGS.md").read_text())
 
 
 class TestServer(Base):
@@ -310,8 +451,27 @@ class TestServer(Base):
         self.assertEqual(self.get("/state.json")[0], 200)
 
     def test_long_answers_are_truncated_not_rejected(self):
-        self.post("/answer", {"id": "trunc", "answer": "z" * 4100})
-        self.assertEqual(len(self.run_obj.feedback()["trunc"]["answer"]), 4000)
+        self.post("/answer", {"id": "abcdef0123", "answer": "z" * 4100})
+        self.assertEqual(len(self.run_obj.feedback()["abcdef0123"]["answer"]), 4000)
+
+    def test_a_non_string_answer_is_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/answer", {"id": "abcdef0123", "answer": {"x": 1}})
+        self.assertEqual(cm.exception.code, 400)
+
+    def test_an_id_that_is_not_a_question_id_is_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/answer", {"id": "../../etc/passwd", "answer": "yes"})
+        self.assertEqual(cm.exception.code, 400)
+
+    def test_an_agent_field_that_is_not_an_agent_name_is_refused(self):
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.post("/answer", {"id": "abcdef0123", "agent": "../x", "answer": "yes"})
+        self.assertEqual(cm.exception.code, 400)
+
+    def test_control_characters_in_an_answer_are_stripped(self):
+        self.post("/answer", {"id": "abcdef0124", "answer": "yes\u0000\u202eno"})
+        self.assertEqual(self.run_obj.feedback()["abcdef0124"]["answer"], "yesno")
 
 
 class TestPortInUse(Base):

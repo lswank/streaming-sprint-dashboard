@@ -38,8 +38,9 @@ LAUNCH = {
 }
 
 
-def run_tests() -> None:
+def run_tests() -> dict[str, int]:
     """Both suites: the shipped skill's own tests, and this repository's."""
+    counts: dict[str, int] = {}
     for label, cwd, start in (("skill", SRC, "tests"), ("package", REPO, "tests_repo")):
         proc = subprocess.run(
             [sys.executable, "-m", "unittest", "discover", "-s", start, "-t", ".", "-q"],
@@ -48,8 +49,10 @@ def run_tests() -> None:
         if proc.returncode != 0:
             print(out)
             raise SystemExit(f"{label} tests failed; the package was not built")
-        count = re.search(r"Ran (\d+) test", out)
-        print(f"{label} tests: {count.group(1) if count else '?'} passed")
+        found = re.search(r"Ran (\d+) test", out)
+        counts[label] = int(found.group(1)) if found else 0
+        print(f"{label} tests: {counts[label]} passed")
+    return counts
 
 
 def build_host(host: str, dest: Path) -> None:
@@ -91,7 +94,7 @@ def main() -> int:
                     help="where the zip lands (default: the Desktop)")
     args = ap.parse_args()
 
-    run_tests()
+    counts = run_tests()
     staging = REPO / "dist"
     if staging.exists():
         shutil.rmtree(staging)
@@ -100,7 +103,10 @@ def main() -> int:
 
     for host in HOSTS:
         build_host(host, dest)
-    shutil.copy(SRC / "README.md", dest / "README.md")
+    readme = (SRC / "README.md").read_text().replace(
+        "{{SKILL_TEST_COUNT}}", str(counts["skill"]))
+    assert "{{" not in readme, "an unresolved placeholder is left in the README"
+    (dest / "README.md").write_text(readme)
     shutil.copy(REPO / "LICENSE", dest / "LICENSE")
     shutil.copy(SRC / "install.sh", dest / "install.sh")
     (dest / "install.sh").chmod(0o755)

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import webbrowser
 from datetime import datetime, timezone
@@ -35,7 +36,7 @@ import render  # noqa: E402
 import schema  # noqa: E402
 from schema import (  # noqa: E402
     AgentState, Answer, ConfirmStep, Default, Evidence, HumanInput, Manifest,
-    Question, RosterEntry, Unknown, ValidationError, now, qid,
+    Question, RosterEntry, Unknown, ValidationError, check_agent_name, now, qid,
 )
 
 DEFAULT_PORT = 8787
@@ -65,11 +66,14 @@ class Run:
     def manifest(self) -> Manifest:
         return schema.read_json(self.manifest_path, Manifest)
 
+    # WHY the name check sits here: these two methods are the only places a name
+    # becomes a path, so validating here covers every command at once. Without it
+    # an agent called "../../x" writes outside the run directory.
     def agent_path(self, name: str) -> Path:
-        return self.state / f"{name}.json"
+        return self.state / f"{check_agent_name(name)}.json"
 
     def log_path(self, name: str) -> Path:
-        return self.state / f"{name}.log"
+        return self.state / f"{check_agent_name(name)}.log"
 
     def agent_names(self) -> list[str]:
         """Roster order first, then any extra state file, so a stray agent still shows."""
@@ -83,7 +87,9 @@ class Run:
         if not path.exists():
             remit = next((r.remit for r in self.manifest().roster if r.name == name), "")
             return AgentState(name=name, remit=remit)
-        return schema.read_json(path, AgentState)
+        st = schema.read_json(path, AgentState)
+        st.name = name          # the filename wins; check reports the disagreement
+        return st
 
     def read_agent_lenient(self, name: str) -> tuple[AgentState, str]:
         """For rendering: a bad file becomes a blocked card, never a traceback on screen."""
@@ -106,7 +112,13 @@ class Run:
     def read_logs(self) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
         for p in sorted(self.state.glob("*.log")):
-            with p.open("rb") as fh:
+            if not p.is_file():
+                continue
+            try:
+                fh = p.open("rb")
+            except OSError:
+                continue
+            with fh:
                 size = p.stat().st_size
                 if size > self.LOG_TAIL_BYTES:
                     fh.seek(size - self.LOG_TAIL_BYTES)
@@ -119,8 +131,20 @@ class Run:
         path = self.state / "_answers.json"
         if not path.exists():
             return {}
-        raw = json.loads(path.read_text())
+        try:
+            raw = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            raise ValidationError([f"_answers.json: cannot be read ({exc})"]) from exc
+        if not isinstance(raw, dict):
+            raise ValidationError(["_answers.json: expected an object keyed by question id"])
         return {k: schema.build(Answer, v, f"_answers.json[{k}]") for k, v in raw.items()}
+
+    def answers_lenient(self) -> dict[str, Answer]:
+        """For rendering: a broken answers file must not blank the whole page."""
+        try:
+            return self.answers()
+        except ValidationError:
+            return {}
 
     def write_answer(self, a: Answer) -> None:
         current = {k: schema.to_dict(v) for k, v in self.answers().items()}
@@ -156,7 +180,7 @@ class Run:
     def snapshot(self) -> tuple[Manifest, list[AgentState], dict[str, Answer], dict[str, dict], dict[str, list[str]]]:
         m = self.manifest()
         states = [self.read_agent_lenient(n)[0] for n in self.agent_names()]
-        return m, states, self.answers(), self.feedback(), self.read_logs()
+        return m, states, self.answers_lenient(), self.feedback(), self.read_logs()
 
 
 # --- commands --------------------------------------------------------------------
@@ -173,8 +197,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     for spec in args.agent:
         name, _, remit = spec.partition(":")
         name = name.strip()
-        if not name:
-            raise SystemExit(f"--agent {spec!r}: name is empty; use name or name:remit")
+        try:
+            check_agent_name(name)
+        except ValidationError as exc:
+            raise SystemExit(f"--agent {spec!r}: {exc}")
         roster.append(RosterEntry(name=name, remit=remit.strip(), model=args.model))
     questions = [Question(id=f"q{i}", text=t) for i, t in enumerate(args.question, start=1)]
     m = Manifest(title=args.title, questions=questions, roster=roster, created=now())
@@ -251,36 +277,47 @@ def cmd_log(args: argparse.Namespace) -> int:
     run.require()
     run.state.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime(LOG_STAMP)
+    line = schema.clean_text(args.line)
     with run.log_path(args.agent).open("a") as fh:
-        fh.write(f"{stamp} {args.line}\n")
+        fh.write(f"{stamp} {line}\n")
     # WHY: the first log line means the agent has started. Flipping the status here
     # keeps the card honest without asking the agent to remember two calls.
-    st = run.read_agent(args.agent)
-    if st.status == "queued":
-        st.status = "running"
-        run.write_agent(st)
+    with schema.locked(run.agent_path(args.agent)):
+        st = run.read_agent(args.agent)
+        if st.status == "queued":
+            st.status = "running"
+            run.write_agent(st)
     return 0
 
 
 def cmd_set(args: argparse.Namespace) -> int:
     run = Run(Path(args.dir).resolve())
     run.require()
-    st = run.read_agent(args.agent)
-    if args.status:
-        if args.status not in schema.STATUSES:
-            raise SystemExit(f"--status {args.status!r}; use one of {', '.join(schema.STATUSES)}")
-        st.status = args.status
-    if args.summary is not None:
-        st.summary = args.summary
-    if args.remit is not None:
-        st.remit = args.remit
-    run.write_agent(st)
+    with schema.locked(run.agent_path(args.agent)):
+        st = run.read_agent(args.agent)
+        if args.status:
+            st.status = args.status
+        if args.summary is not None:
+            st.summary = args.summary
+        if args.remit is not None:
+            st.remit = args.remit
+        # WHY refused here and not only in check: a done card with no summary is
+        # the one state that looks finished while saying nothing.
+        if st.status == "done" and not st.summary.strip():
+            raise SystemExit("--status done needs a summary: pass --summary with the "
+                             "two sentences that answer this agent's question")
+        run.write_agent(st)
     return 0
 
 
 def cmd_add(args: argparse.Namespace) -> int:
     run = Run(Path(args.dir).resolve())
     run.require()
+    with schema.locked(run.agent_path(args.agent)):
+        return _add_locked(run, args)
+
+
+def _add_locked(run: Run, args: argparse.Namespace) -> int:
     st = run.read_agent(args.agent)
     if args.kind == "unknown":
         st.unknowns.append(Unknown(question=args.question, why_it_matters=args.why, tried=args.tried or ""))
@@ -312,8 +349,10 @@ def cmd_answer(args: argparse.Namespace) -> int:
     ids = {q.id for q in run.manifest().questions}
     if args.question_id not in ids:
         raise SystemExit(f"{args.question_id!r} is not a question in this run (have: {', '.join(sorted(ids))})")
-    run.write_answer(Answer(question_id=args.question_id, verdict=args.verdict, answer=args.answer,
-                            confidence=args.confidence, sources=args.source or []))
+    with schema.locked(run.state / "_answers.json"):
+        run.write_answer(Answer(question_id=args.question_id, verdict=args.verdict,
+                                answer=args.answer, confidence=args.confidence,
+                                sources=args.source or []))
     return 0
 
 
@@ -350,8 +389,13 @@ def cmd_check(args: argparse.Namespace) -> int:
         except ValidationError as exc:
             problems += [f"{name}.json: {p}" for p in exc.problems]
             continue
-        if st.name != name:
-            problems.append(f"{name}.json: name is {st.name!r}; it must match the filename")
+        raw_name = ""
+        try:
+            raw_name = json.loads(run.agent_path(name).read_text()).get("name", "")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+        if raw_name and raw_name != name:
+            problems.append(f"{name}.json: name is {raw_name!r}; it must match the filename")
         if name not in rostered:
             print(f"warning  {name} wrote state but is not on the roster")
         if st.status == "done" and not st.summary.strip():
@@ -383,6 +427,16 @@ def cmd_findings(args: argparse.Namespace) -> int:
     m, states, answers, feedback, _ = run.snapshot()
     out = Path(args.out) if args.out else run.root / "FINDINGS.md"
     lines = [f"# {m.title}", "", f"Generated {now()} from {len(states)} agents.", ""]
+    # WHY a decision table first: a reader who opens this needs the calls and how
+    # firm they are on one screen, before any of the working that produced them.
+    lines += ["## Decisions", "", "| # | Question | Call | Confidence |", "|---|---|---|---|"]
+    for i, q in enumerate(m.questions, start=1):
+        a = answers.get(q.id)
+        call = _cell(a.verdict) if a else "Not answered"
+        conf = a.confidence if a else "none"
+        lines.append(f"| {i} | {_cell(q.text)} | {call} | {conf} |")
+    waiting = [s.name for s in states if s.status == "blocked"]
+    lines += ["", f"Blocked agents: {', '.join(waiting) if waiting else 'none'}.", ""]
     lines += ["## Answers", ""]
     for q in m.questions:
         a = answers.get(q.id)
@@ -560,13 +614,24 @@ def make_handler(run: Run):
                 return
             try:
                 row = json.loads(self.rfile.read(length) or b"{}")
-                if not isinstance(row, dict) or not row.get("answer"):
-                    raise ValueError("answer is required")
+                if not isinstance(row, dict):
+                    raise ValueError("expected a JSON object")
+                answer = row.get("answer")
+                if not isinstance(answer, str) or not answer.strip():
+                    raise ValueError("answer must be a non-empty string")
+                # WHY the id and agent are pattern-checked: they are keys, and the
+                # page only ever sends ids this tool generated.
+                ident = str(row.get("id") or "")
+                if not re.fullmatch(r"[0-9a-f]{0,32}", ident):
+                    raise ValueError("id is not a question id")
+                agent = str(row.get("agent") or "")
+                if agent and not schema.AGENT_NAME_RE.match(agent):
+                    raise ValueError("agent is not an agent name")
                 run.append_feedback({
-                    "id": str(row.get("id") or "")[:32],
-                    "agent": str(row.get("agent") or "")[:64],
-                    "question": str(row.get("question") or "")[:2000],
-                    "answer": str(row["answer"])[:4000],
+                    "id": ident,
+                    "agent": agent,
+                    "question": schema.clean_text(str(row.get("question") or ""))[:2000],
+                    "answer": schema.clean_text(answer)[:4000],
                     "at": now(),
                 })
             except (ValueError, json.JSONDecodeError) as exc:
