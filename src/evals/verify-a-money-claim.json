@@ -1,0 +1,11 @@
+{
+  "skills": ["streaming-sprint-dashboard"],
+  "query": "The exit-cost agent says restoration runs about 180 thousand dollars. Can we put that in front of the board?",
+  "files": [],
+  "expected_behavior": [
+    "Opens the underlying source itself rather than relaying the agent's number",
+    "Records the check on the coordinator agent as evidence with a source and a date",
+    "Labels the claim unverified and states the reason when the source cannot be opened",
+    "Adds a confirmation step with a named owner instead of treating the number as settled"
+  ]
+}

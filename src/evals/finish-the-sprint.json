@@ -1,0 +1,11 @@
+{
+  "skills": ["streaming-sprint-dashboard"],
+  "query": "All five agents are done. Wrap it up.",
+  "files": [],
+  "expected_behavior": [
+    "Writes an answer for every asked question with a verdict, a confidence and a source",
+    "Runs sprint.py check and fixes what it names before claiming the sprint is finished",
+    "Runs sprint.py findings to produce FINDINGS.md from the same state instead of retyping it",
+    "Files every confirmation step as a task with its owner, and says which manual steps remain"
+  ]
+}

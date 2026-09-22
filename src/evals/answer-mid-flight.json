@@ -1,0 +1,11 @@
+{
+  "skills": ["streaming-sprint-dashboard"],
+  "query": "I clicked 'Up to 3 months' on the occupancy gap question. Keep going.",
+  "files": [],
+  "expected_behavior": [
+    "Runs sprint.py replies to read what was actually captured rather than assuming the answer",
+    "Passes the answer to the agent that asked it and records it in CONTEXT.md under what is already settled",
+    "Never blocks the other agents waiting for an answer",
+    "Leaves the server running so more questions can be answered"
+  ]
+}

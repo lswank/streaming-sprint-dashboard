@@ -1,0 +1,12 @@
+{
+  "skills": ["streaming-sprint-dashboard"],
+  "query": "Six agents on the warehouse lease question: renew, renegotiate or leave, what leaving costs, and who signs off. This will take a while, so show me progress as it happens.",
+  "files": [],
+  "expected_behavior": [
+    "Runs sprint.py init with one --question per asked question and one --agent per question before launching anything",
+    "Starts sprint.py serve and gives the user the URL while every card is still queued",
+    "Fills CONTEXT.md with the request verbatim and the shared facts before the first agent starts",
+    "__LAUNCH__",
+    "Does not hand-write HTML or edit any file under state/ directly"
+  ]
+}

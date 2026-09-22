@@ -1,0 +1,10 @@
+{
+  "skills": ["streaming-sprint-dashboard"],
+  "query": "Fan out two agents to check whether these two vendor pages still list the same price. Should take about a minute.",
+  "files": [],
+  "expected_behavior": [
+    "Says a dashboard is not worth it for a fan-out this short and explains that a dashboard finishing after the work is a report",
+    "Runs the two checks without scaffolding a run directory or starting a server",
+    "Reports the two prices with their sources and dates"
+  ]
+}
